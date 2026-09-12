@@ -2,5 +2,5 @@ name: "AstraMeter"
 url: "https://github.com/tomquist/astrameter"
 maintainer: "Tom Quist <tomquist@users.noreply.github.com>"
 addons:
-  b2500_meter:
+  b2500_meter_peakshaving:
     repository: ha_addon
