@@ -7,7 +7,6 @@ arch:
   - amd64
   - aarch64
 url: "https://github.com/tomquist/astrameter"
-image: "ghcr.io/tomquist/astrameter-addon"
 panel_icon: "mdi:meter-electric"
 init: false
 startup: application
