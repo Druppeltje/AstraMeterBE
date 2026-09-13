@@ -212,6 +212,7 @@ class CT002:
         osc_damp_threshold=300,
         grid_predict_trust=0.5,
         concentrate_deadband=60.0,
+        peakshaving_threshold=0.0,
         import_trim_w=15.0,
         saturation_detection=True,
         saturation_alpha=0.15,
@@ -238,6 +239,7 @@ class CT002:
         self.consumer_ttl = consumer_ttl
         self.debug_status = debug_status
         self.active_control = active_control
+        self.peakshaving_threshold = peakshaving_threshold
         self.before_send: (
             Callable[[tuple, list, str], Awaitable[list[float] | None]] | None
         ) = None
@@ -616,6 +618,33 @@ class CT002:
             for cid, c in self._consumers.items()
             if c.timestamp > 0
         }
+        # Peak shaving: reconstruct the true household demand (raw grid
+        # reading + what the batteries are currently contributing) and cap
+        # the value handed to the balancer at the configured threshold.
+        # Using the reconstructed demand (not the raw grid reading alone)
+        # avoids a "dead zone": if we simply floored values below the
+        # threshold to zero, the balancer would see zero error regardless of
+        # how much the batteries were already discharging/charging, and
+        # would never drive them back down to zero. Subtracting the
+        # currently active battery contribution keeps a continuous
+        # restoring force at every demand level.
+        if self.peakshaving_threshold > 0 and not hasattr(self, "_peakshaving_logged"):
+            logger.info(
+                "Peak shaving enabled (threshold=%.1fW)", self.peakshaving_threshold
+            )
+            self._peakshaving_logged = True
+        if self.peakshaving_threshold > 0:
+            total_battery_power = sum(
+                parse_int(c.power, 0)
+                for c in self._consumers.values()
+                if c.timestamp > 0
+            )
+            household_demand = total + total_battery_power
+            if household_demand > 0:
+                shaved_target = min(household_demand, self.peakshaving_threshold)
+                total = total - shaved_target
+            # else: household is a net exporter overall; leave `total`
+            # untouched so charging behaviour is unaffected.
         # A consumer that opted out via the request's "participate" flag is
         # treated as inactive: active control excludes it from the distribution
         # pool (it isn't driven), mirroring the aggregation exclusion above.

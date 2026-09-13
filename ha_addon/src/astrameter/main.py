@@ -179,6 +179,9 @@ async def run_device(
         if os.environ.get("DEBUG_STATUS", "").lower() in ("1", "true", "yes"):
             debug_status = True
         active_control = cfg.getboolean(ct_section, "ACTIVE_CONTROL", fallback=True)
+        peakshaving_threshold = cfg.getfloat(
+            ct_section, "PEAKSHAVING_THRESHOLD", fallback=0.0
+        )
         fair_distribution = cfg.getboolean(
             ct_section, "FAIR_DISTRIBUTION", fallback=True
         )
@@ -286,6 +289,7 @@ async def run_device(
             consumer_ttl=consumer_ttl,
             debug_status=debug_status,
             active_control=active_control,
+            peakshaving_threshold=peakshaving_threshold,
             fair_distribution=fair_distribution,
             balance_gain=balance_gain,
             error_boost_threshold=error_boost_threshold,

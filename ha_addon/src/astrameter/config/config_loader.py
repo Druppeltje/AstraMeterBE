@@ -44,7 +44,6 @@ from astrameter.powermeter import (
 )
 from astrameter.powermeter.wrappers.hampel import HampelPowermeter
 from astrameter.powermeter.wrappers.health import HealthTrackingPowermeter
-from astrameter.powermeter.wrappers.peakshaving import PeakshavingPowermeter
 from astrameter.powermeter.wrappers.smoothing import (
     DeadbandPowermeter,
     SmoothedPowermeter,
@@ -206,19 +205,7 @@ def read_all_powermeter_configs(
                     f"Applying power transform (multiplier={multipliers}, offset={offsets}) to {section}"
                 )
                 powermeter = TransformedPowermeter(powermeter, offsets, multipliers)
-            # Apply peakshaving if configured
-            has_peakshaving = config.has_option(section, "PEAKSHAVING_THRESHOLD")
-            if has_peakshaving:
-                peakshaving_thresholds = parse_float_list(
-                    config.get(section, "PEAKSHAVING_THRESHOLD", fallback="0"),
-                    "PEAKSHAVING_THRESHOLD",
-                    section,
-                )
-                logger.info(
-                    f"Applying peakshaving (threshold={peakshaving_thresholds}) to {section}"
-                )
-                powermeter = PeakshavingPowermeter(powermeter, peakshaving_thresholds)
-
+            
             section_throttle_interval = config.getfloat(
                 section, "THROTTLE_INTERVAL", fallback=global_throttle_interval
             )
