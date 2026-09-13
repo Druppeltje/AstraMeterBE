@@ -628,6 +628,11 @@ class CT002:
         # would never drive them back down to zero. Subtracting the
         # currently active battery contribution keeps a continuous
         # restoring force at every demand level.
+        if self.peakshaving_threshold > 0 and not hasattr(self, "_peakshaving_logged"):
+            logger.info(
+                "Peak shaving enabled (threshold=%.1fW)", self.peakshaving_threshold
+            )
+            self._peakshaving_logged = True
         if self.peakshaving_threshold > 0:
             total_battery_power = sum(
                 parse_int(c.power, 0)
