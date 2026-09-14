@@ -459,6 +459,26 @@ class CT002:
             self._device_id or "(default)",
         )
 
+    def set_peakshaving_threshold(self, threshold: float) -> None:
+        """Live-update the peak shaving threshold (W). Surfaced as the
+        device's "Peak Shaving Threshold" number entity in Home Assistant;
+        0 disables peak shaving. Takes effect on the next control cycle."""
+        if threshold < 0:
+            logger.warning(
+                "Ignoring negative peak shaving threshold %.1f for %s",
+                threshold,
+                self._device_id or "(default)",
+            )
+            return
+        if self.peakshaving_threshold == threshold:
+            return
+        self.peakshaving_threshold = threshold
+        logger.info(
+            "Peak shaving threshold set to %.1fW for %s",
+            threshold,
+            self._device_id or "(default)",
+        )
+
     def set_consumer_active(self, consumer_id: str, active: bool) -> None:
         consumer = self._get_consumer(consumer_id)
         if active:
@@ -1198,6 +1218,7 @@ class CT002:
                         ),
                         "min_dc_output": consumer.min_dc_output if consumer else None,
                         "active_control": self.active_control,
+                        "peakshaving_threshold": self.peakshaving_threshold,
                         "efficiency_rotation": (
                             self._balancer.efficiency_rotation_enabled
                         ),
