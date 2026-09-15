@@ -433,6 +433,9 @@ async def run_device(
         insights.register_active_control_handler(
             device_id or "", device.set_active_control
         )
+        insights.register_peakshaving_threshold_handler(
+            device_id or "", device.set_peakshaving_threshold
+        )
 
     # Marstek MQTT responder — only wired up when Marstek credentials
     # yielded a managed MAC (so hame-relay can route the replies back to
