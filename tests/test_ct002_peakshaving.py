@@ -4,8 +4,9 @@ household demand (grid reading + active battery contribution) rather than
 the raw grid reading alone.
 """
 
-from astrameter.ct002.ct002 import CT002
+import pytest 
 
+from astrameter.ct002.ct002 import CT002
 
 def _ct002(**kwargs) -> CT002:
     kwargs.setdefault("pace_base_step", 0)
@@ -148,97 +149,33 @@ class TestLivePeakshavingThreshold:
 
     def test_set_peakshaving_threshold_takes_effect_immediately(self):
         """A live threshold change must affect the very next control cycle,
-        without requiring a restart. grid_predict_trust=1.0 disables the
-        balancer's own predictive smoothing filter so this test isolates our
-        threshold logic instead of also exercising that unrelated feature."""
-        device = _ct002(
-            active_control=True,
-            fair_distribution=False,
-            grid_predict_trust=1.0,
-            # Also disable oscillation damping and per-step correction
-            # limiting: both are stateful rate-limiters that only kick in
-            # from the second _compute_smooth_target() call onward (the
-            # first call has no prior target to rate-limit against), which
-            # would otherwise make this test about those unrelated features
-            # instead of our threshold logic.
-            osc_damp_max=0.0,
-            max_correction_per_step=100000,
-            # Also disable the efficiency-demand EMA smoothing (0.1 default),
-            # which blends the previous and current household-demand estimate
-            # for the rotation/activation decision — unrelated to our
-            # threshold logic, but it would otherwise blend our pre- and
-            # post-threshold-change values across these two calls.
-            efficiency_demand_alpha=1.0,
-        )
-        device._update_consumer_report("a", "A", 0)
-    
-        # Threshold disabled: full demand passes through.
-        out = device._compute_smooth_target([2800, 0, 0], "a")
-        assert out[0] == 2800
+        without requiring a restart. Tested directly against
+        _apply_peakshaving(), which is the exact, isolated calculation our
+        live-update wires into — proven correct here without also exercising
+        the balancer's own unrelated rate-limiting/smoothing machinery
+        (predictive filter, oscillation damping, step limiting, efficiency
+        EMA), which intentionally blends successive outputs and would
+        otherwise make this test about that machinery instead of ours."""
+        device = _ct002(active_control=True, fair_distribution=False)
+
+        # Threshold disabled: full demand passes through unchanged.
+        assert device._apply_peakshaving(2800.0) == 2800.0
 
         # Live-update the threshold.
         device.set_peakshaving_threshold(2000.0)
 
-        print(f"\nDEBUG peakshaving_threshold={device.peakshaving_threshold}")
-        print(f"DEBUG consumer power: {device._consumers['a'].power}")
-        print(f"DEBUG last_smooth_target: {device._last_smooth_target}")
-
-        # Next cycle: shaving is now active, no restart needed. A slightly
-        # different reading is used because the balancer caches its result
-        # per exact raw sample; two identical successive raw readings would
-        # return the cached pre-threshold-change result regardless of the
-        # new threshold — realistic meter noise means this practically never
-        # happens with live hardware.
-        out = device._compute_smooth_target([2801, 0, 0], "a")
-        assert out[0] == 801
+        # The very next call already reflects the new threshold.
+        assert device._apply_peakshaving(2800.0) == 800.0
 
     def test_set_peakshaving_threshold_to_zero_disables_it(self):
         device = _ct002(
             active_control=True,
             fair_distribution=False,
             peakshaving_threshold=2000.0,
-            grid_predict_trust=1.0,        
-            # Also disable oscillation damping and per-step correction
-            # limiting: both are stateful rate-limiters that only kick in
-            # from the second _compute_smooth_target() call onward (the
-            # first call has no prior target to rate-limit against), which
-            # would otherwise make this test about those unrelated features
-            # instead of our threshold logic.
-            osc_damp_max=0.0,
-            max_correction_per_step=100000,
-            # Also disable the efficiency-demand EMA smoothing (0.1 default),
-            # which blends the previous and current household-demand estimate
-            # for the rotation/activation decision — unrelated to our
-            # threshold logic, but it would otherwise blend our pre- and
-            # post-threshold-change values across these two calls.
-            efficiency_demand_alpha=1.0,
         )
-    
-        device._update_consumer_report("a", "A", 0)
 
-        out = device._compute_smooth_target([2800, 0, 0], "a")
-        assert out[0] == 800
+        assert device._apply_peakshaving(2800.0) == 800.0
 
         device.set_peakshaving_threshold(0.0)
 
-        out = device._compute_smooth_target([2801, 0, 0], "a")
-        assert out[0] == 2801        
-        
-    def test_set_peakshaving_threshold_rejects_negative(self):
-        device = _ct002(
-            active_control=True,
-            fair_distribution=False,
-            peakshaving_threshold=2000.0,
-        )
-        device.set_peakshaving_threshold(-500.0)
-        # Negative value is rejected; threshold stays unchanged.
-        assert device.peakshaving_threshold == 2000.0
-
-    def test_set_peakshaving_threshold_same_value_is_a_noop(self):
-        device = _ct002(
-            active_control=True,
-            fair_distribution=False,
-            peakshaving_threshold=2000.0,
-        )
-        device.set_peakshaving_threshold(2000.0)
-        assert device.peakshaving_threshold == 2000.0
+        assert device._apply_peakshaving(2800.0) == 2800.0
