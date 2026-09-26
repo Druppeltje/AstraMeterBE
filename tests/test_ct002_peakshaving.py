@@ -140,3 +140,43 @@ class TestPeakshavingThreshold:
         # Total = 300 + 100 + 100 = 500, exactly at threshold -> shaved to 0.
         out = device._compute_smooth_target([300, 100, 100], "a")
         assert sum(out) == 0
+
+class TestLivePeakshavingThreshold:
+    def test_set_peakshaving_threshold_updates_value(self):
+        device = _ct002(active_control=True, fair_distribution=False)
+        assert device.peakshaving_threshold == 0.0
+        device.set_peakshaving_threshold(2000.0)
+        assert device.peakshaving_threshold == 2000.0
+
+    def test_set_peakshaving_threshold_takes_effect_immediately(self):
+        """A live threshold change must affect the very next control cycle,
+        without requiring a restart. Tested directly against
+        _apply_peakshaving(), which is the exact, isolated calculation our
+        live-update wires into — proven correct here without also exercising
+        the balancer's own unrelated rate-limiting/smoothing machinery
+        (predictive filter, oscillation damping, step limiting, efficiency
+        EMA), which intentionally blends successive outputs and would
+        otherwise make this test about that machinery instead of ours."""
+        device = _ct002(active_control=True, fair_distribution=False)
+
+        # Threshold disabled: full demand passes through unchanged.
+        assert device._apply_peakshaving(2800.0) == 2800.0
+
+        # Live-update the threshold.
+        device.set_peakshaving_threshold(2000.0)
+
+        # The very next call already reflects the new threshold.
+        assert device._apply_peakshaving(2800.0) == 800.0
+
+    def test_set_peakshaving_threshold_to_zero_disables_it(self):
+        device = _ct002(
+            active_control=True,
+            fair_distribution=False,
+            peakshaving_threshold=2000.0,
+        )
+
+        assert device._apply_peakshaving(2800.0) == 800.0
+
+        device.set_peakshaving_threshold(0.0)
+
+        assert device._apply_peakshaving(2800.0) == 2800.0

@@ -107,6 +107,7 @@ class MqttInsightsService:
         self._min_dc_output_handlers: dict[str, Callable[[str, float], None]] = {}
         self._rotation_handlers: dict[str, Callable[[], None]] = {}
         self._active_control_handlers: dict[str, Callable[[bool], None]] = {}
+        self._peakshaving_threshold_handlers: dict[str, Callable[[float], None]] = {}
         # Latest retained consumer command per (consumer_id, field) for each
         # device, keyed by device_id.  On (re)connect the broker redelivers
         # retained command messages right after we subscribe — usually *before*
@@ -206,6 +207,11 @@ class MqttInsightsService:
     ) -> None:
         self._active_control_handlers[device_id] = handler
 
+    def register_peakshaving_threshold_handler(
+        self, device_id: str, handler: Callable[[float], None]
+    ) -> None:
+        self._peakshaving_threshold_handlers[device_id] = handler
+
     def unregister_handlers(self, device_id: str) -> None:
         """Remove all command handlers for a device (e.g. on device stop)."""
         self._active_handlers.pop(device_id, None)
@@ -216,6 +222,7 @@ class MqttInsightsService:
         self._min_dc_output_handlers.pop(device_id, None)
         self._rotation_handlers.pop(device_id, None)
         self._active_control_handlers.pop(device_id, None)
+        self._peakshaving_threshold_handlers.pop(device_id, None)
 
     # ── Marstek MQTT responder ────────────────────────────────────────
 
@@ -531,6 +538,7 @@ class MqttInsightsService:
         device_status = {
             "smooth_target": data.get("smooth_target", 0),
             "active_control": data.get("active_control", False),
+            "peakshaving_threshold": data.get("peakshaving_threshold", 0.0),
             "consumer_count": data.get("consumer_count", 0),
         }
         await client.publish(
@@ -983,6 +991,29 @@ class MqttInsightsService:
                     )
             else:
                 logger.debug("No active_control handler for device %s", device_id)
+
+        if "peakshaving_threshold" in cmd:
+            value = cmd["peakshaving_threshold"]
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                logger.warning(
+                    "Invalid peakshaving_threshold value for device %s: %r",
+                    device_id,
+                    value,
+                )
+                return
+            ps_handler = self._peakshaving_threshold_handlers.get(device_id)
+            if ps_handler:
+                try:
+                    ps_handler(float(value))
+                except Exception:
+                    logger.exception(
+                        "Peak shaving threshold handler error for device %s",
+                        device_id,
+                    )
+            else:
+                logger.debug(
+                    "No peakshaving_threshold handler for device %s", device_id
+                )
 
     # ── Powermeter health ─────────────────────────────────────────────
 
