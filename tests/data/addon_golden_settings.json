@@ -143,6 +143,7 @@
     "osc_damp_threshold": 222,
     "pace_base_step": 35,
     "pace_max_step": 111,
+    "peakshaving_threshold": 0,
     "pid_kd": 0.03,
     "pid_ki": 0.02,
     "pid_kp": 0.4,

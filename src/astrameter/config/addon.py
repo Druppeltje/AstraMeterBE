@@ -119,6 +119,7 @@ _SOURCE_SIGNAL_FIELDS = (
 _CT_FIELDS = (
     "ct_mac",
     "active_control",
+    "peakshaving_threshold",
     "min_efficient_power",
     "efficiency_rotation_interval",
     "min_dc_output",
