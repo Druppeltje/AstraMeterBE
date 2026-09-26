@@ -5,6 +5,7 @@ import pytest
 
 from astrameter.conftest import needs_mosquitto
 
+from . import mqtt as mqtt_module
 from .mqtt import MqttPowermeter, extract_json_value
 
 # ---------------------------------------------------------------------------
@@ -12,23 +13,49 @@ from .mqtt import MqttPowermeter, extract_json_value
 # ---------------------------------------------------------------------------
 
 
-def test_extract_curr_w():
+def test_extract_curr_w() -> None:
     data = {"SML": {"curr_w": 381}}
     assert extract_json_value(data, "$.SML.curr_w") == 381
 
 
-def test_extract_nonexistent_path():
+def test_extract_nonexistent_path() -> None:
     data = {"SML": {"curr_w": 381}}
     with pytest.raises(ValueError):
         extract_json_value(data, "$.SML.nonexistent")
 
 
-def test_extract_float_value():
+def test_extract_float_value() -> None:
     data = {"SML": {"curr_w": 381.75}}
     assert extract_json_value(data, "$.SML.curr_w") == 381.75
 
 
-def test_extract_from_array():
+def test_extract_json_null_raises_value_error() -> None:
+    # Issue #657: a meter that publishes ``null`` for a reading it has no
+    # answer for matches the path but converts to nothing. float(None) raises
+    # TypeError, which no caller expects — it must surface as a ValueError.
+    data = {"power": None}
+    with pytest.raises(ValueError, match="non-numeric"):
+        extract_json_value(data, "$.power")
+
+
+def test_extract_json_object_raises_value_error() -> None:
+    data = {"power": {"value": 42}}
+    with pytest.raises(ValueError, match="non-numeric"):
+        extract_json_value(data, "$.power")
+
+
+def test_extract_json_non_numeric_string_raises_value_error() -> None:
+    data = {"power": "n/a"}
+    with pytest.raises(ValueError, match="non-numeric"):
+        extract_json_value(data, "$.power")
+
+
+def test_extract_numeric_string_still_converts() -> None:
+    data = {"power": "381.75"}
+    assert extract_json_value(data, "$.power") == 381.75
+
+
+def test_extract_from_array() -> None:
     data = {
         "SML": {
             "measurements": [{"curr_w": 100.5}, {"curr_w": 200.75}, {"curr_w": 300}]
@@ -62,34 +89,34 @@ def _make_pm(
     )
 
 
-async def test_get_powermeter_watts_returns_value():
+async def test_get_powermeter_watts_returns_value() -> None:
     pm = _make_pm()
     pm.value = 42.0
     assert await pm.get_powermeter_watts() == [42.0]
 
 
-async def test_get_powermeter_watts_raises_when_no_value():
+async def test_get_powermeter_watts_raises_when_no_value() -> None:
     pm = _make_pm()
     with pytest.raises(ValueError, match="No value received"):
         await pm.get_powermeter_watts()
 
 
-async def test_wait_for_message_returns_immediately():
+async def test_wait_for_message_returns_immediately() -> None:
     pm = _make_pm()
     pm.value = 1.0
     await pm.wait_for_message(timeout=0.1)
 
 
-async def test_wait_for_message_times_out():
+async def test_wait_for_message_times_out() -> None:
     pm = _make_pm()
     with pytest.raises(TimeoutError, match="Timeout waiting"):
         await pm.wait_for_message(timeout=0.1)
 
 
-async def test_wait_for_message_wakes_on_event():
+async def test_wait_for_message_wakes_on_event() -> None:
     pm = _make_pm()
 
-    async def _set_later():
+    async def _set_later() -> None:
         await asyncio.sleep(0.05)
         pm.value = 99.0
         pm._message_event.set()
@@ -100,12 +127,12 @@ async def test_wait_for_message_wakes_on_event():
     assert pm.value == 99.0
 
 
-async def test_wait_for_next_message_blocks_until_new():
+async def test_wait_for_next_message_blocks_until_new() -> None:
     pm = _make_pm()
     pm.value = 1.0
     pm._message_event.set()
 
-    async def _set_later():
+    async def _set_later() -> None:
         await asyncio.sleep(0.05)
         pm.value = 42.0
         pm._message_event.set()
@@ -118,7 +145,7 @@ async def test_wait_for_next_message_blocks_until_new():
     assert pm.value == 42.0
 
 
-async def test_wait_for_next_message_times_out():
+async def test_wait_for_next_message_times_out() -> None:
     pm = _make_pm()
     pm.value = 1.0
     pm._message_event.set()
@@ -126,7 +153,7 @@ async def test_wait_for_next_message_times_out():
         await pm.wait_for_next_message(timeout=0.1)
 
 
-async def test_wait_for_next_message_multi_topic_cold_start():
+async def test_wait_for_next_message_multi_topic_cold_start() -> None:
     pm = _make_pm(topic=["t1", "t2"])
     # Cold start: no values set, event not set. Only one of the two topics
     # publishes during the wait window — wait_for_next_message must return
@@ -134,7 +161,7 @@ async def test_wait_for_next_message_multi_topic_cold_start():
     # refreshed; the multi-phase consistency check belongs to
     # ``wait_for_message`` / ``get_powermeter_watts``).
 
-    async def _publish_one():
+    async def _publish_one() -> None:
         await asyncio.sleep(0.05)
         pm.values[0] = 100.0
         pm._message_event.set()
@@ -150,57 +177,57 @@ async def test_wait_for_next_message_multi_topic_cold_start():
 # ---------------------------------------------------------------------------
 
 
-def test_single_topic_backward_compat():
+def test_single_topic_backward_compat() -> None:
     pm = _make_pm(topic="t1")
     assert len(pm._subscriptions) == 1
     assert pm._subscriptions[0] == ("t1", None)
     assert len(pm.values) == 1
 
 
-def test_single_topic_with_json_path_backward_compat():
+def test_single_topic_with_json_path_backward_compat() -> None:
     pm = _make_pm(topic="t1", json_path="$.power")
     assert pm._subscriptions == [("t1", "$.power")]
 
 
-def test_multi_topic_constructor():
+def test_multi_topic_constructor() -> None:
     pm = _make_pm(topic=["t1", "t2", "t3"])
     assert len(pm._subscriptions) == 3
     assert len(pm.values) == 3
     assert pm._subscriptions == [("t1", None), ("t2", None), ("t3", None)]
 
 
-def test_single_topic_multi_json_paths():
+def test_single_topic_multi_json_paths() -> None:
     pm = _make_pm(topic="t", json_path=["$.a", "$.b", "$.c"])
     assert len(pm._subscriptions) == 3
     assert pm._subscriptions == [("t", "$.a"), ("t", "$.b"), ("t", "$.c")]
 
 
-def test_multi_topic_single_json_path():
+def test_multi_topic_single_json_path() -> None:
     pm = _make_pm(topic=["t1", "t2"], json_path="$.p")
     assert pm._subscriptions == [("t1", "$.p"), ("t2", "$.p")]
 
 
-def test_multi_topic_multi_json_path_matching():
+def test_multi_topic_multi_json_path_matching() -> None:
     pm = _make_pm(topic=["t1", "t2"], json_path=["$.a", "$.b"])
     assert pm._subscriptions == [("t1", "$.a"), ("t2", "$.b")]
 
 
-def test_empty_topic_list_raises():
+def test_empty_topic_list_raises() -> None:
     with pytest.raises(ValueError, match="At least one MQTT topic"):
         _make_pm(topic=[])
 
 
-def test_multi_topic_multi_json_path_length_mismatch():
+def test_multi_topic_multi_json_path_length_mismatch() -> None:
     with pytest.raises(ValueError, match="must match"):
         _make_pm(topic=["t1", "t2"], json_path=["$.a", "$.b", "$.c"])
 
 
-def test_topic_indices_mapping():
+def test_topic_indices_mapping() -> None:
     pm = _make_pm(topic="t", json_path=["$.a", "$.b"])
     assert pm._topic_indices == {"t": [0, 1]}
 
 
-def test_multi_topic_indices_mapping():
+def test_multi_topic_indices_mapping() -> None:
     pm = _make_pm(topic=["t1", "t2", "t3"])
     assert pm._topic_indices == {"t1": [0], "t2": [1], "t3": [2]}
 
@@ -210,14 +237,14 @@ def test_multi_topic_indices_mapping():
 # ---------------------------------------------------------------------------
 
 
-async def test_get_watts_raises_when_partial_values():
+async def test_get_watts_raises_when_partial_values() -> None:
     pm = _make_pm(topic=["t1", "t2"])
     pm.values[0] = 100.0
     with pytest.raises(ValueError, match="No value received"):
         await pm.get_powermeter_watts()
 
 
-async def test_get_watts_returns_all_phases():
+async def test_get_watts_returns_all_phases() -> None:
     pm = _make_pm(topic=["t1", "t2", "t3"])
     pm.values[0] = 100.0
     pm.values[1] = 200.0
@@ -225,10 +252,10 @@ async def test_get_watts_returns_all_phases():
     assert await pm.get_powermeter_watts() == [100.0, 200.0, 300.0]
 
 
-async def test_wait_for_message_returns_when_all_set():
+async def test_wait_for_message_returns_when_all_set() -> None:
     pm = _make_pm(topic=["t1", "t2"])
 
-    async def _set_later():
+    async def _set_later() -> None:
         await asyncio.sleep(0.05)
         pm.values[0] = 10.0
         pm._message_event.set()
@@ -242,7 +269,7 @@ async def test_wait_for_message_returns_when_all_set():
     assert await pm.get_powermeter_watts() == [10.0, 20.0]
 
 
-async def test_wait_for_message_times_out_with_partial():
+async def test_wait_for_message_times_out_with_partial() -> None:
     pm = _make_pm(topic=["t1", "t2"])
     pm.values[0] = 10.0
     # values[1] is still None
@@ -250,7 +277,7 @@ async def test_wait_for_message_times_out_with_partial():
         await pm.wait_for_message(timeout=0.2)
 
 
-async def test_value_property_backward_compat():
+async def test_value_property_backward_compat() -> None:
     pm = _make_pm()
     assert pm.value is None
     pm.value = 42.0
@@ -261,33 +288,33 @@ async def test_value_property_backward_compat():
 # --- stream_online health hook (no broker needed) ---
 
 
-def test_stream_online_false_before_connect():
+def test_stream_online_false_before_connect() -> None:
     pm = _make_pm()
     # Not connected and no value yet.
     assert pm.stream_online() is False
 
 
-def test_stream_online_false_when_connected_but_no_value():
+def test_stream_online_false_when_connected_but_no_value() -> None:
     pm = _make_pm()
     pm._connected_event.set()
     assert pm.stream_online() is False
 
 
-def test_stream_online_true_when_connected_and_value():
+def test_stream_online_true_when_connected_and_value() -> None:
     pm = _make_pm()
     pm._connected_event.set()
     pm.value = 42.0
     assert pm.stream_online() is True
 
 
-def test_stream_online_false_when_disconnected_even_with_value():
+def test_stream_online_false_when_disconnected_even_with_value() -> None:
     pm = _make_pm()
     pm.value = 42.0
     # _connected_event left cleared -> offline despite a cached value.
     assert pm.stream_online() is False
 
 
-def test_stream_online_multi_topic_stays_true_when_value_unchanged():
+def test_stream_online_multi_topic_stays_true_when_value_unchanged() -> None:
     pm = _make_pm(topic=["a", "b", "c"])
     pm._connected_event.set()
     pm.values[0] = 100.0
@@ -298,7 +325,7 @@ def test_stream_online_multi_topic_stays_true_when_value_unchanged():
     assert pm.stream_online() is True
 
 
-def test_stream_online_false_when_a_topic_never_received():
+def test_stream_online_false_when_a_topic_never_received() -> None:
     pm = _make_pm(topic=["a", "b", "c"])
     pm._connected_event.set()
     pm.values[0] = 100.0
@@ -308,12 +335,70 @@ def test_stream_online_false_when_a_topic_never_received():
 
 
 # ---------------------------------------------------------------------------
+# Bad-payload handling — issue #657
+# ---------------------------------------------------------------------------
+
+
+def test_store_survives_json_null_payload() -> None:
+    # The OBI Energytracker gateway publishes {"power": null} now and then.
+    # One such payload must not take the reader down with it.
+    pm = _make_pm(topic="t", json_path="$.power")
+    pm._store("t", json.dumps({"power": 100.0}))
+    assert pm.values == [100.0]
+
+    pm._store("t", json.dumps({"power": None}))
+    assert pm.values == [100.0], "a null payload must leave the last reading alone"
+
+    pm._store("t", json.dumps({"power": 200.0}))
+    assert pm.values == [200.0], "the reader must still accept the next good value"
+
+
+def test_store_bad_path_does_not_block_sibling_paths() -> None:
+    # One null phase must not cost the other phases their reading.
+    pm = _make_pm(topic="t", json_path=["$.l1", "$.l2"])
+    pm._store("t", json.dumps({"l1": None, "l2": 220.0}))
+    assert pm.values == [None, 220.0]
+
+
+async def test_run_reconnects_after_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-MqttError out of the message loop must not end the reader.
+
+    Nothing awaits ``_run``, so an escaping exception used to kill the task
+    silently: the meter kept serving its last value and ``stream_online()``
+    kept calling it healthy, forever (issue #657).
+    """
+    pm = _make_pm()
+    attempts = 0
+
+    async def _serve(tls_context: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TypeError("float() argument must be a string or a real number")
+        pm._connected_event.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(mqtt_module, "RECONNECT_DELAY", 0.01)
+    monkeypatch.setattr(pm, "_serve_connection", _serve)
+
+    await pm.start()
+    try:
+        await asyncio.wait_for(pm._connected_event.wait(), timeout=5)
+        assert attempts == 2, "the reader did not reconnect after the error"
+        assert pm._run_task is not None and not pm._run_task.done()
+    finally:
+        await pm.stop()
+
+
+# ---------------------------------------------------------------------------
 # Integration tests (require mosquitto)
 # ---------------------------------------------------------------------------
 
 
 @needs_mosquitto
-async def test_receives_plain_value(mqtt_broker):
+async def test_receives_plain_value(mqtt_broker: int) -> None:
     import aiomqtt
 
     port = mqtt_broker
@@ -331,7 +416,7 @@ async def test_receives_plain_value(mqtt_broker):
 
 
 @needs_mosquitto
-async def test_receives_json_value(mqtt_broker):
+async def test_receives_json_value(mqtt_broker: int) -> None:
     import aiomqtt
 
     port = mqtt_broker
@@ -349,7 +434,7 @@ async def test_receives_json_value(mqtt_broker):
 
 
 @needs_mosquitto
-async def test_wait_for_message_timeout_with_no_publish(mqtt_broker):
+async def test_wait_for_message_timeout_with_no_publish(mqtt_broker: int) -> None:
     port = mqtt_broker
     topic = "test/timeout"
     pm = MqttPowermeter(broker="127.0.0.1", port=port, topic=topic)
@@ -363,7 +448,7 @@ async def test_wait_for_message_timeout_with_no_publish(mqtt_broker):
 
 
 @needs_mosquitto
-async def test_receives_multiple_messages_returns_latest(mqtt_broker):
+async def test_receives_multiple_messages_returns_latest(mqtt_broker: int) -> None:
     import aiomqtt
 
     port = mqtt_broker
@@ -383,7 +468,7 @@ async def test_receives_multiple_messages_returns_latest(mqtt_broker):
 
 
 @needs_mosquitto
-async def test_receives_multi_topic_values(mqtt_broker):
+async def test_receives_multi_topic_values(mqtt_broker: int) -> None:
     import aiomqtt
 
     port = mqtt_broker
@@ -403,7 +488,7 @@ async def test_receives_multi_topic_values(mqtt_broker):
 
 
 @needs_mosquitto
-async def test_receives_single_topic_multi_json_paths(mqtt_broker):
+async def test_receives_single_topic_multi_json_paths(mqtt_broker: int) -> None:
     import aiomqtt
 
     port = mqtt_broker
@@ -424,5 +509,43 @@ async def test_receives_single_topic_multi_json_paths(mqtt_broker):
             await pub.publish(topic, payload=json.dumps(payload).encode())
         await pm.wait_for_message(timeout=5)
         assert await pm.get_powermeter_watts() == [110.5, 220.3, 330.1]
+    finally:
+        await pm.stop()
+
+
+@needs_mosquitto
+async def test_null_json_payload_does_not_freeze_the_meter(mqtt_broker: int) -> None:
+    """Issue #657: one ``{"power": null}`` used to freeze the reading for good.
+
+    ``float(None)`` raised TypeError, which ``_store`` did not catch and
+    ``_run`` only handled for ``MqttError``. The reader task died, so every
+    later publish was dropped while ``get_powermeter_watts()`` kept returning
+    the stale value and ``stream_online()`` kept reporting the meter healthy.
+    """
+    import aiomqtt
+
+    port = mqtt_broker
+    topic = "test/null-json"
+    pm = MqttPowermeter(broker="127.0.0.1", port=port, topic=topic, json_path="$.power")
+    await pm.start()
+    try:
+        await asyncio.wait_for(pm._connected_event.wait(), timeout=5)
+        async with aiomqtt.Client(hostname="127.0.0.1", port=port) as pub:
+            await pub.publish(topic, payload=json.dumps({"power": 100.0}).encode())
+            await pm.wait_for_message(timeout=5)
+            assert await pm.get_powermeter_watts() == [100.0]
+
+            await pub.publish(topic, payload=json.dumps({"power": None}).encode())
+            await asyncio.sleep(0.3)
+            assert pm._run_task is not None and not pm._run_task.done(), (
+                "a null payload killed the MQTT reader task"
+            )
+
+            await pub.publish(topic, payload=json.dumps({"power": 200.0}).encode())
+            await pm.wait_for_next_message(timeout=5)
+        assert await pm.get_powermeter_watts() == [200.0], (
+            "the meter stayed frozen on the value it held before the null payload"
+        )
+        assert pm.stream_online() is True
     finally:
         await pm.stop()
