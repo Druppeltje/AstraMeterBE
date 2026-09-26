@@ -4,6 +4,8 @@
 
 import {
   getPowermeter,
+  parseChannels,
+  formatChannels,
   PER_METER_TUNING,
   CT_BASIC,
   CT_ACTIVE,
@@ -58,9 +60,30 @@ function generalSection(state: State): string {
   lines.push(`DEVICE_TYPE = ${types}`);
   if (!isBlank(g.deviceIds)) lines.push(`DEVICE_IDS = ${g.deviceIds.trim()}`);
   lines.push(`SKIP_POWERMETER_TEST = ${boolToIni(!!g.skipPowermeterTest)}`);
-  if (g.webConfigEnabled) {
-    lines.push("WEB_CONFIG_ENABLED = True");
-    if (!isBlank(g.webServerPort)) lines.push(`WEB_SERVER_PORT = ${g.webServerPort}`);
+  // Tri-state: written only when the user answered, since leaving it out is
+  // itself an answer — the config editor then follows the dashboard below.
+  if (!isBlank(g.webConfigEnabled)) {
+    lines.push(`WEB_CONFIG_ENABLED = ${g.webConfigEnabled === "true" ? "True" : "False"}`);
+  }
+  // The dashboard is on unless the form says otherwise (`undefined` from an
+  // ad-hoc caller means "default", and the default is on). Written out either
+  // way — it is the one line a user goes looking for to turn the page off.
+  const dashboardEnabled = g.dashboardEnabled !== false;
+  lines.push(`DASHBOARD_ENABLED = ${boolToIni(dashboardEnabled)}`);
+  // Writes are on by default too, and this is the line someone turns off after
+  // reading the security section — so it is written out whenever the page is
+  // served, not only when it deviates.
+  if (dashboardEnabled) lines.push(`DASHBOARD_ALLOW_WRITE = ${boolToIni(g.dashboardAllowWrite !== false)}`);
+  // Only emitted when the user named something: the default allowlist (IPs,
+  // localhost, .local) covers almost every setup, and an empty line here would
+  // read as a knob that needs turning.
+  if (dashboardEnabled && !isBlank(g.dashboardAllowedHosts)) {
+    lines.push(`DASHBOARD_ALLOWED_HOSTS = ${g.dashboardAllowedHosts}`);
+  }
+  // The port carries the health check too, so a chosen one is kept even when
+  // neither the dashboard nor the editor is served on it.
+  if (!isBlank(g.webServerPort)) {
+    lines.push(`WEB_SERVER_PORT = ${g.webServerPort}`);
   }
   if (!isBlank(g.throttleInterval)) lines.push(`THROTTLE_INTERVAL = ${g.throttleInterval}`);
   if (!isBlank(g.waitForNextMessage)) lines.push(`WAIT_FOR_NEXT_MESSAGE = ${g.waitForNextMessage}`);
@@ -80,6 +103,8 @@ function meterSection(meter: Meter, opts: { multi: boolean }): string {
   const phaseList = pm.phaseListKeys && meter.phases === 3 ? pm.phaseListKeys : null;
 
   for (const field of pm.fields) {
+    // CHANNELS is normalized below so Python and ESPHome share one grammar.
+    if (field.key === "CHANNELS") continue;
     let value = fields[field.key];
     if (phaseList && field.key === "TOPIC" && !isBlank(value)) {
       lines.push(`TOPICS = ${String(value).trim()}`);
@@ -97,6 +122,21 @@ function meterSection(meter: Meter, opts: { multi: boolean }): string {
   // PER_PHASE) rather than per-phase field lists.
   if (pm.phaseFlagKey && meter.phases === 3) {
     lines.push(`${pm.phaseFlagKey} = True`);
+  }
+
+  // CHANNELS: positive decimal ints only (same rules as Python parse_channels).
+  // Three-phase keeps a valid 3-id list or falls back to phaseChannelsValue;
+  // single-phase keeps a single valid id or defaults to "1".
+  if (pm.fields.some((f) => f.key === "CHANNELS")) {
+    let ids = parseChannels(fields.CHANNELS);
+    if (pm.phaseChannelsValue && meter.phases === 3) {
+      if (!ids || ids.length !== 3) {
+        ids = parseChannels(pm.phaseChannelsValue) ?? [1, 2, 3];
+      }
+    } else if (!ids || ids.length !== 1) {
+      ids = [1];
+    }
+    lines.push(`CHANNELS = ${formatChannels(ids)}`);
   }
 
   // Per-meter tuning (throttle, smoothing, transform, hampel, PID …)
@@ -200,9 +240,17 @@ export function generateConfigIni(state: State): string {
 const IND = "  ";
 
 
-// Render the upstream grid sensor(s) for the chosen meter. Returns
-// { topBlocks: [...], sensorBlock: string, phases: number, warnings: [...] }
-function esphomeSensor(state: State) {
+interface EsphomeSensor {
+  topBlocks: string[];
+  sensorBlock: string;
+  phases: number;
+  warnings: string[];
+  /** External components from this repo the sensor needs besides ct002. */
+  components?: string[];
+}
+
+// Render the upstream grid sensor(s) for the chosen meter.
+function esphomeSensor(state: State): EsphomeSensor {
   const meter = (state.meters && state.meters[0]) || { type: "homeassistant", fields: {}, phases: 1, tuning: {} };
   const pm = getPowermeter(meter.type) || getPowermeter("homeassistant")!;
   const phases = meter.phases === 3 ? 3 : 1;
@@ -221,7 +269,9 @@ function esphomeSensor(state: State) {
     const parts = String(raw).split(",").map((s) => s.trim());
     return parts.length === 1 ? parts[0] : (parts[idx] ?? "");
   }
-  function phaseFilterBlock(idx: number): string {
+  // `depth` is the sensor's own indent level: 2 for a list item under
+  // `sensor:`, 3 for a sub-sensor of a platform (e.g. tibber_pulse's power_l1).
+  function phaseFilterBlock(idx: number, depth = 2): string {
     const lines: string[] = [];
     const off = phaseValue(tuning.POWER_OFFSET, idx);
     const mul = phaseValue(tuning.POWER_MULTIPLIER, idx);
@@ -229,9 +279,8 @@ function esphomeSensor(state: State) {
     if (!isBlank(mul)) lines.push(`- multiply: ${mul}`);
     if (!isBlank(tuning.THROTTLE_INTERVAL) && Number(tuning.THROTTLE_INTERVAL) > 0)
       lines.push(`- throttle: ${tuning.THROTTLE_INTERVAL}s`);
-    return lines.length
-      ? `\n${IND}${IND}filters:\n` + lines.map((l) => `${IND}${IND}${IND}${l}`).join("\n")
-      : "";
+    const pad = IND.repeat(depth);
+    return lines.length ? `\n${pad}filters:\n` + lines.map((l) => `${pad}${IND}${l}`).join("\n") : "";
   }
 
   function templateSensor(id: string): string {
@@ -281,6 +330,77 @@ function esphomeSensor(state: State) {
     return { topBlocks, sensorBlock: "sensor:\n" + sensors.join("\n"), phases, warnings };
   }
 
+  if (esp.kind === "tibber_pulse") {
+    // Our own component (esphome/components/tibber_pulse): it loads
+    // http_request itself and raises its timeout for the slow bridge, so no
+    // other block is needed.
+    const lines = [`${IND}- platform: tibber_pulse`, `${IND}${IND}host: ${quoteYaml(String(f.IP || "192.168.1.140").trim())}`];
+    lines.push(`${IND}${IND}password: ${quoteYaml(String(f.PASSWORD || "AD56-54BA"))}`);
+    if (!isBlank(f.USER) && String(f.USER).trim() !== "admin") lines.push(`${IND}${IND}user: ${quoteYaml(String(f.USER).trim())}`);
+    if (!isBlank(f.NODE_ID) && String(f.NODE_ID).trim() !== "1") lines.push(`${IND}${IND}node_id: ${String(f.NODE_ID).trim()}`);
+    if (!isBlank(f.TIMEOUT) && Number(f.TIMEOUT) > 0) lines.push(`${IND}${IND}timeout: ${f.TIMEOUT}s`);
+    for (const key of ["OBIS_POWER_CURRENT", "OBIS_POWER_L1", "OBIS_POWER_L2", "OBIS_POWER_L3"]) {
+      if (!isBlank(f[key])) lines.push(`${IND}${IND}${key.toLowerCase()}: ${quoteYaml(String(f[key]).trim())}`);
+    }
+    const keys = phases === 3 ? ["power_l1", "power_l2", "power_l3"] : ["power"];
+    ids.forEach((id, i) => {
+      lines.push(`${IND}${IND}${keys[i]}:\n${IND}${IND}${IND}id: ${id}${phaseFilterBlock(i, 3)}`);
+    });
+    return { topBlocks, sensorBlock: "sensor:\n" + lines.join("\n"), phases, warnings, components: ["tibber_pulse"] };
+  }
+
+  if (esp.kind === "dsmr") {
+    const TELEGRAM_BYTES = 1700;
+    // A telegram reports import and export separately, both in kW, so the net
+    // watt value is (delivered - returned) * 1000. The dsmr sensors drive a
+    // template sensor through on_value rather than polling it, and the NaN
+    // guard covers the first telegram, where only one of the two has landed.
+    // The older versions differ from 4/5 in more than baud rate, and from each
+    // other in parity: 2.2 is 7N1 where 3 is 7E1.
+    const version = String(f.DSMR_VERSION || "5");
+    const legacy = version === "3" || version === "2.2";
+    const rxPin = f.RX_PIN || "GPIO4";
+    const serial = legacy
+      ? `${IND}baud_rate: 9600\n${IND}data_bits: 7\n${IND}parity: ${version === "2.2" ? "NONE" : "EVEN"}\n${IND}stop_bits: 1`
+      : `${IND}baud_rate: 115200`;
+    topBlocks.push(`uart:\n${IND}id: uart_p1\n${IND}rx_pin: ${rxPin}\n${serial}\n${IND}rx_buffer_size: ${TELEGRAM_BYTES}`);
+    const key = isBlank(f.DECRYPTION_KEY) ? "" : `\n${IND}decryption_key: ${f.DECRYPTION_KEY}`;
+    // The CRC16 trailer arrived with DSMR 4.0; 2.2 and 3 telegrams carry no
+    // checksum at all, so the component's check has to be off for both or it
+    // rejects every telegram.
+    const crc = legacy ? `\n${IND}crc_check: false` : "";
+    // max_telegram_length defaults to 1500, below the buffer we just sized, so
+    // set it too or the component still truncates what the UART accepted.
+    topBlocks.push(`dsmr:\n${IND}uart_id: uart_p1\n${IND}max_telegram_length: ${TELEGRAM_BYTES}${key}${crc}`);
+
+    const suffix = phases === 3 ? ["_l1", "_l2", "_l3"] : [""];
+    const dsmrKeys = ids
+      .map((id, i) => {
+        const upd = `${IND}${IND}${IND}on_value:\n${IND}${IND}${IND}${IND}then:\n${IND}${IND}${IND}${IND}${IND}- component.update: ${id}`;
+        return (
+          `${IND}${IND}power_delivered${suffix[i]}:\n${IND}${IND}${IND}id: p1_delivered${suffix[i]}\n${IND}${IND}${IND}internal: true\n${upd}\n` +
+          `${IND}${IND}power_returned${suffix[i]}:\n${IND}${IND}${IND}id: p1_returned${suffix[i]}\n${IND}${IND}${IND}internal: true\n${upd}`
+        );
+      })
+      .join("\n");
+    const templates = ids
+      .map((id, i) => {
+        const d = `p1_delivered${suffix[i]}`;
+        const r = `p1_returned${suffix[i]}`;
+        return (
+          `${IND}- platform: template\n${IND}${IND}id: ${id}\n${IND}${IND}unit_of_measurement: W\n${IND}${IND}device_class: power\n` +
+          `${IND}${IND}update_interval: never\n${IND}${IND}lambda: |-\n` +
+          `${IND}${IND}${IND}const float delivered = id(${d}).state;\n` +
+          `${IND}${IND}${IND}const float returned = id(${r}).state;\n` +
+          `${IND}${IND}${IND}if (std::isnan(delivered) || std::isnan(returned)) return {};\n` +
+          `${IND}${IND}${IND}return (delivered - returned) * 1000.0f;${phaseFilterBlock(i)}`
+        );
+      })
+      .join("\n");
+    const sensorBlock = `sensor:\n${IND}- platform: dsmr\n${dsmrKeys}\n${templates}`;
+    return { topBlocks, sensorBlock, phases, warnings };
+  }
+
   if (esp.kind === "modbus") {
     topBlocks.push(`uart:\n${IND}id: mod_uart\n${IND}tx_pin: GPIO17\n${IND}rx_pin: GPIO16\n${IND}baud_rate: 9600\n${IND}stop_bits: 1`);
     topBlocks.push(`modbus:\n${IND}id: modbus1\n${IND}uart_id: mod_uart`);
@@ -306,7 +426,9 @@ function esphomeSensor(state: State) {
     const sensors = (use3 ? ids : ["grid_l1"]).map((id, i) => templateSensor(id) + phaseFilterBlock(i));
     const url = use3 ? esp.url3!(f) : (esp.url1 ? esp.url1(f) : "http://example.com/api");
     const lambdaBody = use3
-      ? esp.lambda3
+      ? typeof esp.lambda3 === "function"
+        ? esp.lambda3(f)
+        : esp.lambda3
       : typeof esp.lambda1 === "function"
         ? esp.lambda1(f)
         : esp.lambda1;
@@ -466,7 +588,7 @@ function ct002FilterBlock(meter: Meter | undefined): string | null {
 export function generateEsphome(state: State): string {
   const esp = state.esphome || {};
   const meter = (state.meters && state.meters[0]) || {};
-  const { topBlocks, sensorBlock, phases, warnings } = esphomeSensor(state);
+  const { topBlocks, sensorBlock, phases, warnings, components: extraComponents } = esphomeSensor(state);
 
   // ESPHome allows only one top-level `mqtt:` block, so an MQTT meter and
   // MQTT Insights must share the same broker. Warn if they were set differently
@@ -514,7 +636,8 @@ export function generateEsphome(state: State): string {
   out.push("logger:");
   out.push(`ota:\n${IND}- platform: esphome`);
   out.push(`wifi:\n${IND}ssid: !secret wifi_ssid\n${IND}password: !secret wifi_password`);
-  out.push(`external_components:\n${IND}- source: ${esphomeSource()}\n${IND}${IND}components: [ct002]`);
+  const components = ["ct002", ...(extraComponents || [])].join(", ");
+  out.push(`external_components:\n${IND}- source: ${esphomeSource()}\n${IND}${IND}components: [${components}]`);
 
   // mqtt_insights needs a top-level mqtt: block. If the meter itself is MQTT,
   // its broker wins (the data source is what matters) and Insights reuses it;
@@ -570,6 +693,29 @@ export function generateEsphome(state: State): string {
   if (fb) ctLines.push(fb);
   for (const b of ct002OptionalBlocks(state.ct)) ctLines.push(b);
 
+  // The live status dashboard, served by the board itself. It is on by
+  // default, so the only things worth writing down are the two deviations:
+  // leaving it out of the firmware, and allowing writes. Controls have their
+  // own flag here: the board has no ingress to sit behind, so unlike the
+  // service's DASHBOARD_ALLOW_WRITE they stay off until asked for.
+  if (state.general && state.general.esphomeDashboard === false) {
+    ctLines.push(`${IND}dashboard: false`);
+  } else if (state.general && (state.general.esphomeControls || !isBlank(state.general.dashboardAllowedHosts))) {
+    const dash = [`${IND}dashboard:`];
+    if (state.general.esphomeControls) dash.push(`${IND}${IND}controls: true`);
+    // The board's IP and its `.local` mDNS name are allowed without asking, so
+    // this only appears when the user named something else — a reverse proxy.
+    const hosts = String(state.general.dashboardAllowedHosts || "")
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean);
+    if (hosts.length) {
+      dash.push(`${IND}${IND}allowed_hosts:`);
+      for (const name of hosts) dash.push(`${IND}${IND}${IND}- ${name}`);
+    }
+    ctLines.push(dash.join("\n"));
+  }
+
   if (wantInsights) {
     const mf = state.mqttInsights.fields || {};
     const sub = [`${IND}mqtt_insights:`];
@@ -578,6 +724,7 @@ export function generateEsphome(state: State): string {
     if (!isBlank(mf.HA_DISCOVERY_PREFIX)) sub.push(`${IND}${IND}ha_discovery_prefix: ${mf.HA_DISCOVERY_PREFIX}`);
     if (mf.MARSTEK_MQTT_ENABLED) sub.push(`${IND}${IND}marstek_mqtt_enabled: ${mf.MARSTEK_MQTT_ENABLED}`);
     if (!isBlank(mf.MARSTEK_MQTT_INTERVAL)) sub.push(`${IND}${IND}marstek_mqtt_interval: ${mf.MARSTEK_MQTT_INTERVAL}s`);
+    if (!isBlank(mf.STATE_THROTTLE_INTERVAL)) sub.push(`${IND}${IND}state_throttle_interval: ${mf.STATE_THROTTLE_INTERVAL}s`);
     if (sub.length > 1) ctLines.push(sub.join("\n"));
   }
 
@@ -673,6 +820,18 @@ export function generateHomeAssistant(state: State): string {
   add("wait_for_next_message", !isBlank(g.waitForNextMessage) ? g.waitForNextMessage : tuning.WAIT_FOR_NEXT_MESSAGE);
   add("dedupe_time_window", g.dedupeTimeWindow);
 
+  // The add-on always serves the dashboard — it is the sidebar panel — so
+  // there is no option to emit for that. Only a read-only dashboard deviates
+  // from the add-on default.
+  if (!g.dashboardAllowWrite) add("dashboard_allow_write", false);
+  // Reaching the page on the add-on's own port, bypassing the Home Assistant
+  // login that ingress provides. Off in the add-on, so only opting in is worth
+  // emitting.
+  if (g.dashboardDirectAccess) add("dashboard_direct_access", true);
+  // Only meaningful alongside that port, but harmless on its own, so it is
+  // emitted whenever the user named a host rather than gated on it.
+  add("dashboard_allowed_hosts", g.dashboardAllowedHosts);
+
   // CT identity / control-mode / efficiency / DC keep-alive options.
   const ctf = (state.ct && state.ct.fields) || {};
   add("ct_mac", ctf.CT_MAC);
@@ -683,6 +842,10 @@ export function generateHomeAssistant(state: State): string {
   add("min_efficient_power", ctf.MIN_EFFICIENT_POWER);
   add("efficiency_rotation_interval", ctf.EFFICIENCY_ROTATION_INTERVAL);
   add("min_dc_output", ctf.MIN_DC_OUTPUT);
+  // Probe window / stall escape for the efficiency rotation (the "saturation"
+  // group); same 1:1 lower-cased mapping.
+  add("saturation_grace_seconds", ctf.SATURATION_GRACE_SECONDS);
+  add("saturation_stall_timeout_seconds", ctf.SATURATION_STALL_TIMEOUT_SECONDS);
   // Balancer / active-control tuning (the "balancer" group). These map 1:1 to
   // the add-on options of the same lower-cased name; only values the user set
   // are emitted. Fair distribution is a tri-state select in the editor

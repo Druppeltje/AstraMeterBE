@@ -24,6 +24,7 @@ import {
 } from "./schema.js";
 import { generate } from "./generate.js";
 import { ghDoc } from "./links.js";
+import { changedLines } from "./preview-diff.js";
 import { STORAGE_KEY, newMeter, defaultState, safeParse, migrate, type State, type Meter } from "./state.js";
 
 let state: State = loadState() || defaultState();
@@ -232,7 +233,14 @@ function targetCard(): HTMLElement {
         class: "choice" + (active ? " active" : ""),
         type: "button",
         onclick: () => {
-          state.target = value;
+          // Both targets ship dashboard writes on, so the box carries over as
+          // the user left it. (The ESP32's own controls are a separate flag —
+          // it has no login to sit behind.)
+          // Re-migrate rather than just assigning: a meter the new target
+          // can't run (an esphomeOnly source leaving the ESPHome target)
+          // has to be replaced here, or the generator emits a section the
+          // Python loader silently skips.
+          state = migrate({ ...state, target: value });
           if (value === "homeassistant") coerceHaMeter();
           rerenderAll();
         },
@@ -259,7 +267,7 @@ function deviceCard(): HTMLElement {
         el("p", { html: "You'll need to <strong>buy an ESP32 board</strong> (see below), install ESPHome once, paste the file this tool generates, and flash it over USB. Step-by-step instructions appear at the bottom of the page." }),
       ]),
       el("div", { class: "hw" }, [
-        el("h3", { text: "🛒 Recommended hardware" }),
+        el("h3", { text: "Recommended hardware" }),
         el("p", { class: "help", html: "We recommend the <strong>ESP32-S3 DevKitC-1</strong> — it's cheap, widely available, and is the board this tool defaults to. One board is enough no matter how many batteries you have." }),
         el("ul", { class: "hw-links" }, [
           el("li", {}, [linkOut(HARDWARE.single.url, "Buy 1× " + "ESP32-S3 DevKitC-1"), el("span", { class: "help", text: " — for a single setup" })]),
@@ -321,8 +329,25 @@ function deviceCard(): HTMLElement {
         // Device IDs, skip-test and the built-in web editor aren't add-on options.
         state.target === "homeassistant" ? null : fieldControl({ key: "deviceIds", label: "Device IDs", help: "Optional fixed IDs (comma-separated, same order as the meters above). Leave blank to auto-generate.", type: "text", placeholder: "shellypro3em-c59b15461a21" }, g, {}),
         state.target === "homeassistant" ? null : fieldControl({ key: "skipPowermeterTest", label: "Skip power meter test on startup", help: "Skip the connection check when AstraMeter starts.", type: "checkbox" }, g, {}),
-        state.target === "homeassistant" ? null : fieldControl({ key: "webConfigEnabled", label: "Enable built-in web config editor", help: "Opt-in editor at http://<host>:<port>/config.", type: "checkbox" }, g, { structural: true }),
-        state.target !== "homeassistant" && g.webConfigEnabled ? fieldControl({ key: "webServerPort", label: "Web server port", help: "Default 52500.", type: "number", placeholder: "52500" }, g, {}) : null,
+        // These three are config.ini settings. The add-on always serves the
+        // dashboard — it is the sidebar panel — so there is nothing to enable
+        // there, only the write flag to relax; an ESP32 serves its dashboard
+        // from a `ct002:` sub-block, so that target has its own toggle down in
+        // the ESPHome card.
+        state.target === "python" ? fieldControl({ key: "webConfigEnabled", label: "Built-in web config editor", help: "The editor at http://<host>:<port>/config, which is also the dashboard's Configuration tab. Left on default it comes with the dashboard below; \"Off\" keeps it out of the page while the battery controls stay.", type: "select", options: [{ value: "", label: "Default (with the dashboard)" }, { value: "true", label: "On" }, { value: "false", label: "Off" }] }, g, { structural: true }) : null,
+        state.target === "python" ? fieldControl({ key: "dashboardEnabled", label: "Serve the live status dashboard", help: "Live status page at http://<host>:<port>/. On by default; uncheck to leave only the health check (and the config editor above, if you turned it on).", type: "checkbox" }, g, { structural: true }) : null,
+        state.target === "homeassistant" || (state.target === "python" && g.dashboardEnabled) ? fieldControl({ key: "dashboardAllowWrite", label: "Allow changes from the dashboard", help: "Lets the dashboard edit your configuration and control batteries. Leave off for a read-only dashboard.", type: "checkbox" }, g, {}) : null,
+        // Only the add-on has an ingress to sit behind, so this opt-out of it
+        // is an add-on option — a config.ini reads it only when the add-on
+        // runs from one, which the editor cannot tell from here.
+        state.target === "homeassistant" ? fieldControl({ key: "dashboardDirectAccess", label: "Allow dashboard access outside Home Assistant", help: "Also serves the page on http://<host>:52500 with NO login. Leave off unless you need it.", type: "checkbox" }, g, {}) : null,
+        // Both targets here serve the port, so both can be reached under a
+        // name. On the add-on that only matters once direct access is on — but
+        // the field is cheap, and hiding it behind another toggle buries the
+        // fix for the refusal someone is looking at. ESPHome takes the same
+        // setting as a ct002: sub-block, so it appears in that card instead.
+        state.target === "homeassistant" || (state.target === "python" && g.dashboardEnabled) ? fieldControl({ key: "dashboardAllowedHosts", label: "Extra dashboard host names", help: "Comma-separated. IP addresses, localhost, .local and .home.arpa names always work — add a name if you reach the dashboard through a reverse proxy, a private DNS entry, or a router-assigned name such as astrameter.fritz.box.", type: "text", placeholder: "astrameter.example.lan" }, g, {}) : null,
+        state.target === "python" ? fieldControl({ key: "webServerPort", label: "Web server port", help: "Serves the health check, and the dashboard and editor when they are on. Default 52500.", type: "number", placeholder: "52500" }, g, {}) : null,
         fieldControl({ key: "throttleInterval", label: "Global throttle interval (s)", help: "Minimum seconds between readings for every meter. 0 = off. You can override per meter below.", type: "number", placeholder: "0" }, g, {}),
         fieldControl({ key: "waitForNextMessage", label: "Wait for fresh push (global)", help: "Wait up to 2s for the newest reading from push-based meters.", type: "select", options: [{ value: "", label: "Default (on)" }, { value: "true", label: "On" }, { value: "false", label: "Off" }] }, g, {}),
         fieldControl({ key: "dedupeTimeWindow", label: "Dedupe window (s)", help: "Ignore repeated requests from the same client within this window. 0 = off.", type: "number", placeholder: "0" }, g, {}),
@@ -358,7 +383,9 @@ function meterEditor(meter: Meter, index: number): HTMLElement {
         rerenderAll();
       },
     },
-    POWERMETERS.map((p) => el("option", { value: p.id, ...(p.id === meter.type ? { selected: true } : {}) }, p.label)),
+    POWERMETERS.filter((p) => !p.esphomeOnly || state.target === "esphome").map((p) =>
+      el("option", { value: p.id, ...(p.id === meter.type ? { selected: true } : {}) }, p.label),
+    ),
   );
 
   const badge =
@@ -410,13 +437,17 @@ function meterEditor(meter: Meter, index: number): HTMLElement {
       ? fieldControl({ key: "netmask", label: "NETMASK (which batteries use this meter)", help: "CIDR of battery IPs that should use this meter, e.g. 192.168.1.0/24.", type: "text", placeholder: "192.168.1.0/24" }, meter, {})
       : null;
 
+  // The reference for the platform being configured, falling back to the other one.
+  const doc = state.target === "esphome" ? pm.docEsphome ?? pm.docPython : pm.docPython ?? pm.docEsphome;
+  const docLink = doc ? el("a", { class: "doclink", href: ghDoc(doc), target: "_blank", rel: "noopener" }, "Reference for this meter ↗") : null;
+
   return el("div", { class: "meter" }, [
     el("div", { class: "meter-head" }, [
       typeField,
       badge,
     ]),
     el("p", { class: "blurb", text: pm.blurb }),
-    pm.docPython ? el("a", { class: "doclink", href: ghDoc(pm.docPython!), target: "_blank", rel: "noopener" }, "Reference for this meter ↗") : null,
+    docLink,
     suffixField,
     phaseToggle,
     el("div", { class: "field-grid" }, fieldGroup(fields, meter.fields, { phases: meter.phases })),
@@ -517,12 +548,63 @@ function extrasCard(): HTMLElement {
   ];
   if (mi.enabled) insightsBody.push(el("div", { class: "field-grid" }, fieldGroup(insightsFields, mi.fields, {})));
 
+  // The board's own status page. The other targets offer this in the general
+  // options (it is a config.ini / add-on setting there); on an ESP32 it is a
+  // ct002: sub-block, so it belongs with the other two.
+  const dashboardBody =
+    state.target === "esphome"
+      ? [
+          el("hr", {}),
+          el("h3", { text: "Live status dashboard" }),
+          fieldControl(
+            {
+              key: "esphomeDashboard",
+              label: "Serve the live status dashboard from the board",
+              help: "On by default. A status page at http://<device>/ showing grid power, every battery and the balancer's state. Configuration is not editable there — an ESP32's settings live in this file.",
+              type: "checkbox",
+            },
+            state.general,
+            { structural: true },
+          ),
+          // The page has no login of its own, so writes stay opt-in.
+          state.general.esphomeDashboard
+            ? fieldControl(
+                {
+                  key: "esphomeControls",
+                  label: "Allow battery changes from the dashboard",
+                  help: "Lets anyone who can reach the device steer your batteries from the page. Leave off for a read-only dashboard.",
+                  type: "checkbox",
+                },
+                state.general,
+                {},
+              )
+            : null,
+          // The board is reached by IP or by its .local mDNS name, both of
+          // which the firmware allows outright — so this stays empty unless a
+          // reverse proxy sits in front of it.
+          state.general.esphomeDashboard
+            ? fieldControl(
+                {
+                  key: "dashboardAllowedHosts",
+                  label: "Extra dashboard host names",
+                  help: "Comma-separated. The board's IP address, localhost and its .local name always work — add a name only if you reach the page through a reverse proxy. Other names are refused, because a name is the one part of the address another website can aim at this device.",
+                  type: "text",
+                  placeholder: "astrameter.example.lan",
+                },
+                state.general,
+                {},
+              )
+            : null,
+        ]
+      : [];
+
   return card(5, "Optional extras", "Skip this unless you want Marstek-app integration or a custom MQTT broker.", [
     el("h3", { text: "Marstek cloud registration" }),
     ...marstekBody,
     el("hr", {}),
     el("h3", { text: isHa ? "Custom MQTT broker" : "MQTT Insights / Home Assistant" }),
     ...insightsBody,
+    ...dashboardBody,
   ]);
 }
 
@@ -567,10 +649,33 @@ function refreshPreview(): void {
   } catch (err) {
     text = "# Error generating config: " + (err as Error).message;
   }
-  pre.textContent = text;
+  showPreview(pre, text);
   const fn = document.getElementById("preview-filename");
   if (fn) fn.textContent = outputFilename();
   saveState();
+}
+
+// Render the config one line per <span>, and after the first render mark the
+// lines the last change touched so the user can see what their answer did.
+// The first changed line is scrolled into view inside the preview if needed.
+let previewText: string | null = null;
+function showPreview(code: HTMLElement, text: string): void {
+  if (text === previewText) return;
+  const lines = text.split("\n");
+  let changed = previewText === null ? new Set<number>() : changedLines(previewText.split("\n"), lines);
+  // Switching the target rewrites the whole file; lighting all of it up says nothing.
+  if (changed.size > lines.length / 2) changed = new Set();
+  previewText = text;
+  const spans = lines.map((line, i) => el("span", changed.has(i) ? { class: "changed" } : {}, line + "\n"));
+  code.replaceChildren(...spans);
+  const first = spans.find((span) => span.classList.contains("changed"));
+  const scroller = code.closest("pre");
+  if (!first || !scroller) return;
+  const top = first.offsetTop - scroller.offsetTop;
+  if (top < scroller.scrollTop || top > scroller.scrollTop + scroller.clientHeight - 40) {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    scroller.scrollTo({ top: Math.max(0, top - 40), behavior: reduce ? "auto" : "smooth" });
+  }
 }
 
 function previewPanel(): HTMLElement {
@@ -582,7 +687,7 @@ function previewPanel(): HTMLElement {
     ]),
     el("pre", {}, [el("code", { id: "preview-code" })]),
     el("div", { class: "preview-actions" }, [
-      el("button", { type: "button", class: "primary", onclick: copyConfig }, "Copy"),
+      el("button", { type: "button", class: "secondary", onclick: copyConfig }, "Copy"),
       el("button", { type: "button", class: "primary", onclick: downloadConfig }, "Download file"),
     ]),
   ]);
@@ -718,9 +823,9 @@ function projectCard(): HTMLElement {
   const fileInput = el("input", { type: "file", accept: "application/json", class: "hidden", onchange: (e: Event) => { const f = (e.target as HTMLInputElement).files?.[0]; if (f) loadProject(f); } });
   return card(null, "Save your work", "Your answers are saved in this browser automatically. You can also export a project file to back up or continue on another device.", [
     el("div", { class: "btn-row" }, [
-      el("button", { type: "button", class: "secondary", onclick: saveProject }, "💾 Save project file"),
-      el("button", { type: "button", class: "secondary", onclick: () => fileInput.click() }, "📂 Load project file"),
-      el("button", { type: "button", class: "secondary", onclick: shareLink }, "🔗 Copy share link"),
+      el("button", { type: "button", class: "secondary", onclick: saveProject }, "Save project file"),
+      el("button", { type: "button", class: "secondary", onclick: () => fileInput.click() }, "Load project file"),
+      el("button", { type: "button", class: "secondary", onclick: shareLink }, "Copy share link"),
       el("button", { type: "button", class: "link-danger", onclick: resetProject }, "Start over"),
       fileInput,
     ]),

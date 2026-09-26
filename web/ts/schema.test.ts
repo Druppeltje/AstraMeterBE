@@ -16,7 +16,12 @@ import {
   MARSTEK_FIELDS,
   MQTT_INSIGHTS_FIELDS,
   ESP_BOARDS,
+  parseChannels,
+  formatChannels,
+  refossChannelIds,
 } from "./schema.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 let failures = 0;
 function check(cond, msg) {
@@ -29,8 +34,8 @@ function check(cond, msg) {
 // Allowed shapes — anything outside these lists is almost certainly a typo.
 const FIELD_TYPES = new Set(["text", "number", "password", "select", "checkbox"]);
 const FIELD_PROPS = new Set(["key", "label", "help", "type", "default", "placeholder", "options", "required", "phase", "advanced", "ey"]);
-const PM_PROPS = new Set(["id", "label", "section", "blurb", "docPython", "fields", "esphome", "phaseListKeys", "phaseFlagKey"]);
-const ESP_KINDS = new Set(["homeassistant", "mqtt", "sml", "modbus", "http", "unsupported"]);
+const PM_PROPS = new Set(["id", "label", "section", "esphomeOnly", "blurb", "docPython", "docEsphome", "fields", "esphome", "phaseListKeys", "phaseFlagKey", "phaseChannelsValue"]);
+const ESP_KINDS = new Set(["homeassistant", "mqtt", "sml", "dsmr", "modbus", "http", "tibber_pulse", "unsupported"]);
 const ESP_TIERS = new Set(["native", "generic", "alternate", "unsupported"]);
 const ESP_PROPS = new Set(["kind", "tier", "note", "url1", "url3", "lambda1", "lambda3", "jsonRoot", "haEntity", "headersField", "warn"]);
 
@@ -112,6 +117,51 @@ for (const pm of POWERMETERS) {
   if (pm.phaseListKeys) {
     check(typeof pm.phaseListKeys.topic === "string" && typeof pm.phaseListKeys.jsonPath === "string", `${where}: phaseListKeys needs topic+jsonPath`);
   }
+  if (pm.phaseChannelsValue !== undefined) {
+    check(
+      typeof pm.phaseChannelsValue === "string" && pm.phaseChannelsValue.trim() !== "",
+      `${where}: phaseChannelsValue must be a non-empty string`,
+    );
+  }
+}
+
+// ── doc links point at real headings ──
+// The landing page and the generator link each meter to its section in the
+// docs. GitHub derives a heading's anchor from its text, so renaming a heading
+// silently breaks the link; this catches it.
+const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
+const anchorCache = new Map();
+function anchorsOf(file) {
+  if (!anchorCache.has(file)) {
+    const anchors = new Set();
+    const seen = new Map();
+    let fenced = false;
+    for (const line of readFileSync(repoRoot + file, "utf8").split("\n")) {
+      if (line.startsWith("```")) fenced = !fenced;
+      const m = !fenced && /^#{1,6}\s+(.*)$/.exec(line);
+      if (!m) continue;
+      // GitHub's slug: lowercase, drop punctuation, spaces become hyphens,
+      // repeats get -1, -2, ...
+      const slug = m[1].trim().toLowerCase().replace(/[^\p{L}\p{N}\s_-]/gu, "").replace(/\s/g, "-");
+      const n = seen.get(slug) ?? 0;
+      seen.set(slug, n + 1);
+      anchors.add(n ? `${slug}-${n}` : slug);
+    }
+    anchorCache.set(file, anchors);
+  }
+  return anchorCache.get(file);
+}
+const DOC_FILES = { docPython: "docs/powermeters.md", docEsphome: "docs/esphome-powermeters.md" };
+for (const pm of POWERMETERS) {
+  const where = `powermeter "${pm.id}"`;
+  check(pm.esphomeOnly || pm.docPython, `${where}: has a docPython link (it runs in Python)`);
+  for (const [prop, file] of Object.entries(DOC_FILES)) {
+    const link = pm[prop];
+    if (link === undefined) continue;
+    const [path, anchor] = link.split("#");
+    check(path === file, `${where}: ${prop} points into ${file}`);
+    check(anchor && anchorsOf(file).has(anchor), `${where}: ${prop} anchor "#${anchor}" is a heading in ${file}`);
+  }
 }
 
 // ── PHASE_CAPABLE references real meters ──
@@ -145,6 +195,27 @@ check(Array.isArray(ESP_BOARDS) && ESP_BOARDS.length > 0, "ESP_BOARDS: non-empty
 for (const b of ESP_BOARDS) {
   check(typeof b.value === "string" && typeof b.label === "string", `ESP_BOARDS: each entry needs value+label (${JSON.stringify(b)})`);
 }
+
+// ── parseChannels (shared Python / ESPHome CHANNELS grammar) ──
+check(JSON.stringify(parseChannels("1")) === "[1]", "parseChannels: single id");
+check(JSON.stringify(parseChannels("4,5,6")) === "[4,5,6]", "parseChannels: three ids");
+check(JSON.stringify(parseChannels(" 4 , 5 ")) === "[4,5]", "parseChannels: trims");
+check(parseChannels("1.0") === null, "parseChannels: rejects 1.0");
+check(parseChannels("1e2") === null, "parseChannels: rejects 1e2");
+check(parseChannels("4,5,1.0") === null, "parseChannels: rejects mixed invalid");
+check(parseChannels("0") === null, "parseChannels: rejects 0");
+check(parseChannels("a,2") === null, "parseChannels: rejects non-numeric");
+check(parseChannels("+1") === null, "parseChannels: rejects leading plus sign");
+check(parseChannels("-1") === null, "parseChannels: rejects leading minus sign");
+check(parseChannels("1,") === null, "parseChannels: rejects trailing comma");
+check(parseChannels(",1") === null, "parseChannels: rejects leading comma");
+check(parseChannels("1,,2") === null, "parseChannels: rejects empty middle token");
+check(formatChannels([4, 5, 6]) === "4,5,6", "formatChannels: joins");
+check(JSON.stringify(refossChannelIds("1.0", [1])) === "[1]", "refossChannelIds: falls back on 1.0");
+check(JSON.stringify(refossChannelIds("1e2", [1, 2, 3])) === "[1,2,3]", "refossChannelIds: falls back on 1e2");
+check(JSON.stringify(refossChannelIds("4,5,6", [1, 2, 3])) === "[4,5,6]", "refossChannelIds: keeps valid 3-id list");
+check(JSON.stringify(refossChannelIds("4,5,6,7", [1, 2, 3])) === "[1,2,3]", "refossChannelIds: rejects four-id list (exact length)");
+check(JSON.stringify(refossChannelIds("1,2", [1])) === "[1]", "refossChannelIds: rejects two-id for single-phase fallback");
 
 if (failures) {
   console.error(`\n${failures} schema problem(s) found`);

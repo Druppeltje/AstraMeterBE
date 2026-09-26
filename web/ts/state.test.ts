@@ -49,6 +49,14 @@ ok(migrate(null).target === "python", "migrate(null) returns a usable default-is
 ok(migrate({ target: "weird" }).target === "python", "migrate: invalid target constrained to python");
 ok(migrate({ target: "esphome" }).target === "esphome", "migrate: esphome target preserved");
 
+// An ESPHome-only source (dsmr) has no Python section, so it must not survive a
+// move to another target — otherwise the generator emits a config.ini section
+// the loader silently skips. The target picker re-migrates for this reason.
+const dsmrOnEsphome = migrate({ target: "esphome", meters: [{ type: "dsmr", phases: 1, fields: {}, tuning: {} }] });
+ok(dsmrOnEsphome.meters[0].type === "dsmr", "migrate: esphomeOnly meter kept under the esphome target");
+const dsmrOnPython = migrate({ target: "python", meters: [{ type: "dsmr", phases: 1, fields: {}, tuning: {} }] });
+ok(dsmrOnPython.meters[0].type !== "dsmr", "migrate: esphomeOnly meter replaced under the python target");
+
 const fromHostileLink = migrate(
   safeParse(
     JSON.stringify({
@@ -90,6 +98,17 @@ ok(typeof hg.general.skipPowermeterTest === "boolean", "migrate: non-boolean ski
 ok(typeof hg.general.webServerPort === "string", "migrate: numeric webServerPort coerced to string");
 const okg = migrate({ general: { deviceTypes: ["ct002", "ct003"], deviceIds: "x-1" } });
 ok(okg.general.deviceTypes.length === 2 && okg.general.deviceIds === "x-1", "migrate: valid general preserved");
+
+// The config editor was a checkbox before it was tri-state. A saved "on" has
+// to survive; a saved "off" was only ever "not ticked", so restoring it as the
+// new "off" would take the dashboard's Configuration tab from everyone who
+// comes back to the generator.
+const editorWas = (v: unknown) => migrate({ general: { webConfigEnabled: v } }).general.webConfigEnabled;
+ok(editorWas(true) === "true", "migrate: a ticked editor checkbox still asks for the editor");
+ok(editorWas(false) === "", "migrate: an unticked one restores as unset, not as off");
+ok(editorWas("false") === "false", "migrate: an explicit off is kept");
+ok(editorWas("yes") === "", "migrate: a value from nowhere does not become off");
+ok(editorWas(undefined) === "", "migrate: a state written before the key existed is unset");
 
 // migrate fills in newly-added keys for an old saved state
 const old = migrate({ target: "python", meters: [{ type: "shelly", fields: { IP: "1.1.1.1" } }] });

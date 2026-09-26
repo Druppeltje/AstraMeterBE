@@ -37,13 +37,13 @@ export interface Field {
 
 /** How a source is read on an ESP32 (see docs/esphome-powermeters.md). */
 export interface EsphomeSpec {
-  kind: "homeassistant" | "mqtt" | "sml" | "modbus" | "http" | "unsupported";
+  kind: "homeassistant" | "mqtt" | "sml" | "dsmr" | "modbus" | "http" | "tibber_pulse" | "unsupported";
   tier: "native" | "generic" | "alternate" | "unsupported";
   note: string;
   url1?: (f: Fields) => string;
   url3?: (f: Fields) => string;
   lambda1?: string | ((f: Fields) => string);
-  lambda3?: string;
+  lambda3?: string | ((f: Fields) => string);
   jsonRoot?: string;
   haEntity?: (f: Fields) => string;
   headersField?: string;
@@ -54,13 +54,28 @@ export interface Powermeter {
   id: string;
   label: string;
   section: string;
+  /**
+   * Read only by the ESP32 — there is no Python backend for this source, so
+   * the form hides it unless the ESPHome target is selected. `section` is
+   * unused for these; the Python generator never sees them.
+   */
+  esphomeOnly?: boolean;
   blurb?: string;
+  /** Section for this source in docs/powermeters.md (the Python version). */
   docPython?: string;
+  /** Section for this source in docs/esphome-powermeters.md (the ESP32 build). */
+  docEsphome?: string;
   fields: Field[];
   esphome: EsphomeSpec;
   phaseListKeys?: { topic: string; jsonPath: string };
   /** Boolean key set to True when three-phase is selected (e.g. Fronius PER_PHASE). */
   phaseFlagKey?: string;
+  /**
+   * Default CHANNELS list when three-phase is selected and the form value is
+   * not already three channel ids (e.g. still "1"). Explicit lists like
+   * "4,5,6" are kept as-is by the generator.
+   */
+  phaseChannelsValue?: string;
 }
 
 export interface DeviceType {
@@ -263,6 +278,43 @@ export const PER_METER_TUNING: Field[] = [
 //   'homeassistant' native HA sensor    'mqtt' native mqtt_subscribe
 //   'sml' native sml component          'modbus' native modbus_controller
 //   'http' generic http_request poll    'unsupported' no ESP path yet
+//   'tibber_pulse' this repo's tibber_pulse component (Pulse Bridge over LAN)
+
+/**
+ * Parse a CHANNELS value into positive decimal integers.
+ * Matches the Python Refoss parser (`int(token)` after strip, channel >= 1):
+ * rejects floats (`1.0`), scientific (`1e2`), signs, and other non-decimal tokens.
+ * Returns null if the string is empty, any token is empty (leading / trailing /
+ * repeated commas), any token is signed, or any token is invalid.
+ */
+export function parseChannels(raw: unknown): number[] | null {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const parts = raw.split(",").map((s) => s.trim());
+  // Reject leading / trailing / repeated commas (e.g. "1,", ",1", "1,,2").
+  if (!parts.length || parts.some((part) => !part)) return null;
+  const ids: number[] = [];
+  for (const part of parts) {
+    // Decimal digits only — same rejection set as Python int() for "1.0" / "1e2".
+    if (!/^\d+$/.test(part)) return null;
+    const n = Number.parseInt(part, 10);
+    if (!Number.isSafeInteger(n) || n < 1) return null;
+    ids.push(n);
+  }
+  return ids;
+}
+
+/** Join channel ids as a comma-separated CHANNELS value. */
+export function formatChannels(ids: number[]): string {
+  return ids.join(",");
+}
+
+/** Resolve CHANNELS for ESPHome / defaults: exact id count, else fallback. */
+export function refossChannelIds(raw: FieldValue, fallback: number[]): number[] {
+  const ids = parseChannels(raw);
+  if (!ids || ids.length !== fallback.length) return fallback;
+  return ids;
+}
+
 export const POWERMETERS: Powermeter[] = [
   {
     id: "shelly",
@@ -271,6 +323,7 @@ export const POWERMETERS: Powermeter[] = [
     blurb:
       "A Shelly plug or energy meter (1PM, Plus 1PM, EM, 3EM, 3EM Pro) on your local network.",
     docPython: "docs/powermeters.md#shelly",
+    docEsphome: "docs/esphome-powermeters.md#shelly",
     fields: [
       {
         key: "TYPE",
@@ -303,6 +356,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "TASMOTA",
     blurb: "A device flashed with Tasmota that exposes power under StatusSNS.",
     docPython: "docs/powermeters.md#tasmota",
+    docEsphome: "docs/esphome-powermeters.md#tasmota",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.101", required: true, help: "The Tasmota device's local IP." },
       { key: "USER", label: "Username", type: "text", placeholder: "(optional)", help: "Only if web auth is enabled." },
@@ -329,6 +383,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "SHRDZM",
     blurb: "A SHRDZM smart-meter module exposing /getLastData.",
     docPython: "docs/powermeters.md#shrdzm",
+    docEsphome: "docs/esphome-powermeters.md#shrdzm",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.102", required: true, help: "The module's local IP." },
       { key: "USER", label: "Username", type: "text", placeholder: "shrdzm_user", required: true, help: "SHRDZM API user." },
@@ -349,6 +404,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "EMLOG",
     blurb: "An EmLog logger exposing getinformation.php.",
     docPython: "docs/powermeters.md#emlog",
+    docEsphome: "docs/esphome-powermeters.md#emlog",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.103", required: true, help: "The EmLog's local IP." },
       { key: "METER_INDEX", label: "Meter index", type: "number", default: "0", placeholder: "0", help: "Which meter to read (0 for the first)." },
@@ -369,6 +425,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "IOBROKER",
     blurb: "An ioBroker instance with the simpleAPI adapter.",
     docPython: "docs/powermeters.md#iobroker",
+    docEsphome: "docs/esphome-powermeters.md#iobroker",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.104", required: true, help: "ioBroker host IP." },
       { key: "PORT", label: "Port", type: "number", default: "8087", placeholder: "8087", help: "simpleAPI adapter port (default 8087)." },
@@ -393,6 +450,7 @@ export const POWERMETERS: Powermeter[] = [
     blurb:
       "Read a power sensor that already exists in your Home Assistant. The easiest option if HA already shows your grid power.",
     docPython: "docs/powermeters.md#homeassistant",
+    docEsphome: "docs/esphome-powermeters.md#homeassistant",
     fields: [
       { key: "IP", label: "Home Assistant IP", type: "text", placeholder: "192.168.1.105", required: true, help: "Your HA host's IP or hostname." },
       { key: "PORT", label: "Port", type: "number", default: "8123", placeholder: "8123", help: "HA port (default 8123)." },
@@ -416,6 +474,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "VZLOGGER",
     blurb: "A vzlogger HTTP interface serving values by UUID.",
     docPython: "docs/powermeters.md#vzlogger",
+    docEsphome: "docs/esphome-powermeters.md#vzlogger",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.106", required: true, help: "vzlogger host IP." },
       { key: "PORT", label: "Port", type: "number", default: "8080", placeholder: "8080", help: "vzlogger HTTP port (default 8080)." },
@@ -435,6 +494,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "ESPHOME",
     blurb: "Poll another ESPHome node's web-server REST API.",
     docPython: "docs/powermeters.md#esphome",
+    docEsphome: "docs/esphome-powermeters.md#esphome",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.107", required: true, help: "The other ESPHome device's IP." },
       { key: "PORT", label: "Port", type: "number", default: "6052", placeholder: "6052", help: "Its web-server port (default 6052)." },
@@ -450,11 +510,34 @@ export const POWERMETERS: Powermeter[] = [
     },
   },
   {
+    id: "esphomenative",
+    label: "Another ESPHome device (native Api)",
+    section: "ESPHOMENATIVE",
+    blurb: "Poll another ESPHome node's native API.",
+    docPython: "docs/powermeters.md#esphomenative",
+    docEsphome: "docs/esphome-powermeters.md#esphomenative",
+    fields: [
+      { key: "ADDRESS", label: "IP Address or hostname", type: "text", placeholder: "myDevice.local", required: true, help: "The other ESPHome device's address" },
+      { key: "PORT", label: "Port", type: "number", default: "6053", placeholder: "6053", help: "Its web-server port (default 6053)." },
+      { key: "API_KEY", label: "Api encryption key", type: "password", placeholder: "5BqtR16i91/+rwUl+QrJewKFOnyS/whHc3v9ySSKpb8=", required: true, help: "Api encryption key as defined in the device's .yaml file" },
+      { key: "OBJECT_ID", label: "Entity id", type: "text", placeholder: "grid_power", required: true, help: "The object id of the power entity on that device." },
+      { key: "CLIENT_INFO", label: "Client info string", type: "text", default:"AstraMeter", placeholder: "AstraMeter", required: false, help: "Connection string. Can be used to distinguish different clients" },
+    ],
+    esphome: {
+      kind: "homeassistant",
+      tier: "native",
+      note: "On the ESP there is no bridge — import the other node's entity via Home Assistant (shown), or define the sensor in the same YAML.",
+      // This source names its entity explicitly rather than via CURRENT_POWER_ENTITY.
+      haEntity: (f) => `sensor.${f.OBJECT_ID || "grid_power"}`,
+    },
+  },
+  {
     id: "amis_reader",
     label: "AMIS reader",
     section: "AMIS_READER",
     blurb: "An AMIS reader serving /rest with a signed saldo field.",
     docPython: "docs/powermeters.md#amis-reader",
+    docEsphome: "docs/esphome-powermeters.md#amis-reader",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.108", required: true, help: "The AMIS reader's IP." },
     ],
@@ -472,6 +555,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "MODBUS",
     blurb: "A meter reachable over Modbus TCP or UDP.",
     docPython: "docs/powermeters.md#modbus-tcpudp",
+    docEsphome: "docs/esphome-powermeters.md#modbus",
     fields: [
       { key: "HOST", label: "Host", type: "text", placeholder: "192.168.1.100", required: true, help: "Meter / gateway IP." },
       { key: "PORT", label: "Port", type: "number", default: "502", placeholder: "502", help: "Modbus port (default 502)." },
@@ -513,6 +597,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "MQTT",
     blurb: "Subscribe to a power value published on an MQTT broker.",
     docPython: "docs/powermeters.md#mqtt",
+    docEsphome: "docs/esphome-powermeters.md#mqtt",
     fields: [
       { key: "BROKER", label: "Broker host", type: "text", placeholder: "broker.example.com", help: "Broker hostname/IP. Leave blank if you use a full URI below." },
       { key: "PORT", label: "Port", type: "number", default: "1883", placeholder: "1883", help: "Broker port (1883 plain, 8883 TLS)." },
@@ -537,6 +622,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "JSON_HTTP",
     blurb: "Any HTTP endpoint that returns JSON containing the power value.",
     docPython: "docs/powermeters.md#json-http",
+    docEsphome: "docs/esphome-powermeters.md#json-http",
     fields: [
       { key: "URL", label: "URL", type: "text", placeholder: "http://example.com/api", required: true, help: "The endpoint returning JSON." },
       { key: "JSON_PATHS", label: "JSON path(s)", type: "text", placeholder: "$.power", phase: true, help: "JSONPath to the value. For 3-phase, give one path per phase. Supports extensions like `.split(...)` to strip a unit." },
@@ -559,6 +645,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "TQ_EM",
     blurb: "A TQ Energy Manager (EM420 and similar).",
     docPython: "docs/powermeters.md#tq-energy-manager",
+    docEsphome: "docs/esphome-powermeters.md#tq-energy-manager",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.100", required: true, help: "The energy manager's IP." },
       { key: "PASSWORD", label: "Password", type: "password", placeholder: "(optional)", help: "Device password, if set." },
@@ -577,6 +664,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "HOMEWIZARD",
     blurb: "A HomeWizard P1 meter / energy socket via the local v2 WebSocket API.",
     docPython: "docs/powermeters.md#homewizard",
+    docEsphome: "docs/esphome-powermeters.md#homewizard",
     fields: [
       { key: "IP", label: "IP address", type: "text", placeholder: "192.168.1.110", required: true, help: "The HomeWizard device's IP." },
       { key: "TOKEN", label: "API token", type: "password", placeholder: "32-char hex token", required: true, help: "Obtain once via POST /api/user while pressing the device button." },
@@ -597,6 +685,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "ENVOY",
     blurb: "An Enphase IQ Gateway / Envoy with consumption CTs, via the local HTTPS API.",
     docPython: "docs/powermeters.md#enphase-envoy-iq-gateway",
+    docEsphome: "docs/esphome-powermeters.md#enphase-envoy-iq-gateway",
     fields: [
       { key: "HOST", label: "Host", type: "text", placeholder: "192.168.1.120", required: true, help: "The Envoy's IP." },
       { key: "TOKEN", label: "JWT token", type: "password", placeholder: "eyJ...", help: "Recommended: a long-lived token from entrez.enphaseenergy.com." },
@@ -613,6 +702,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "SMA_ENERGY_METER",
     blurb: "An SMA Energy Meter / Sunny Home Manager via Speedwire multicast.",
     docPython: "docs/powermeters.md#sma-energy-meter",
+    docEsphome: "docs/esphome-powermeters.md#sma-energy-meter",
     fields: [
       { key: "MULTICAST_GROUP", label: "Multicast group", type: "text", default: "239.12.255.254", placeholder: "239.12.255.254", help: "SMA's default multicast group — usually leave as-is." },
       { key: "PORT", label: "Port", type: "number", default: "9522", placeholder: "9522", help: "Speedwire port (default 9522)." },
@@ -627,6 +717,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "FRITZ",
     blurb: "An AVM FRITZ!Smart Energy 250 meter read head, via the FRITZ!Box AHA-HTTP-Interface. Power it over USB — on battery it only updates every ~2 min, too slow for battery control.",
     docPython: "docs/powermeters.md#fritzsmart-energy-250",
+    docEsphome: "docs/esphome-powermeters.md#fritzsmart-energy-250",
     fields: [
       { key: "HOST", label: "FRITZ!Box host", type: "text", default: "fritz.box", placeholder: "fritz.box", required: true, help: "The FRITZ!Box hostname or IP the read head is paired with." },
       { key: "USER", label: "FRITZ!Box user", type: "text", placeholder: "smarthome", required: true, help: "A FRITZ!Box user with the Smart Home permission (Home Network → FRITZ!Box Users)." },
@@ -651,6 +742,7 @@ export const POWERMETERS: Powermeter[] = [
     blurb:
       "A Fronius Smart Meter read through a Fronius inverter's local Solar API.",
     docPython: "docs/powermeters.md#fronius-smart-meter",
+    docEsphome: "docs/esphome-powermeters.md#fronius-smart-meter",
     fields: [
       { key: "IP", label: "Inverter IP", type: "text", placeholder: "192.168.1.130", required: true, help: "The Fronius inverter's local IP (the meter is read through it)." },
       { key: "DEVICE_ID", label: "Meter device id", type: "number", default: "0", placeholder: "0", advanced: true, help: "Solar API meter DeviceId. 0 is the first/only meter." },
@@ -671,26 +763,63 @@ export const POWERMETERS: Powermeter[] = [
     },
   },
   {
+    id: "refoss",
+    label: "Refoss / Meross energy monitor",
+    section: "REFOSS",
+    blurb:
+      "A Refoss or Meross EM01P / EM06P / EM16P via the local Open API (Em.Status.Get). Same hardware under either brand. Cleartext HTTP — trusted LAN only.",
+    docPython: "docs/powermeters.md#refoss--meross-energy-monitor",
+    docEsphome: "docs/esphome-powermeters.md#refoss--meross-energy-monitor",
+    fields: [
+      { key: "IP", label: "Device IP", type: "text", placeholder: "192.168.1.150", required: true, help: "Prefer a numeric IP — Docker bridge often cannot resolve *.local mDNS names. Device API is cleartext HTTP; keep it on a trusted LAN." },
+      { key: "CHANNELS", label: "CT channel(s)", type: "text", default: "1", placeholder: "1", help: "One channel id for single-phase (e.g. 1). For three-phase use three ids for L1/L2/L3 (e.g. 1,2,3 or 4,5,6)." },
+    ],
+    // Default only when three-phase is on and CHANNELS is not already three ids.
+    phaseChannelsValue: "1,2,3",
+    esphome: {
+      kind: "http",
+      tier: "generic",
+      note: "Polls Em.Status.Get?id=65535 over cleartext HTTP (trusted LAN only) and reads status[N].power (channel id minus one). Prefer a numeric IP.",
+      url1: (f) => `http://${f.IP || "192.168.1.150"}/rpc/Em.Status.Get?id=65535`,
+      url3: (f) => `http://${f.IP || "192.168.1.150"}/rpc/Em.Status.Get?id=65535`,
+      lambda1: (f) => {
+        const channel = refossChannelIds(f.CHANNELS, [1])[0];
+        return `id(grid_l1).publish_state(root["status"][${channel - 1}]["power"]);`;
+      },
+      lambda3: (f) => {
+        const [a, b, c] = refossChannelIds(f.CHANNELS, [1, 2, 3]);
+        return (
+          `id(grid_l1).publish_state(root["status"][${a - 1}]["power"]);\n` +
+          `                    id(grid_l2).publish_state(root["status"][${b - 1}]["power"]);\n` +
+          `                    id(grid_l3).publish_state(root["status"][${c - 1}]["power"]);`
+        );
+      },
+    },
+  },
+  {
     id: "tibber_pulse",
     label: "Tibber Pulse (local Bridge)",
     section: "TIBBER_PULSE",
     blurb:
-      "A Tibber Pulse read locally through the Pulse Bridge HTTP API (no Tibber cloud). The bridge decodes your meter's SML telegram; enable its local webserver first.",
+      "A Tibber Pulse read locally through the Pulse Bridge (no Tibber cloud): live readings pushed by the bridge, or HTTP polling where it can't push. Enable the bridge's local webserver first.",
     docPython: "docs/powermeters.md#tibber-pulse",
+    docEsphome: "docs/esphome-powermeters.md#tibber-pulse",
     fields: [
       { key: "IP", label: "Bridge IP", type: "text", placeholder: "192.168.1.140", required: true, help: "The Pulse Bridge's local IP." },
       { key: "PASSWORD", label: "Bridge password", type: "password", placeholder: "AD56-54BA", required: true, help: "The nine-character code printed on the bridge (with the dash)." },
       { key: "USER", label: "Username", type: "text", default: "admin", placeholder: "admin", advanced: true, help: "HTTP Basic-auth user; the bridge uses 'admin'." },
       { key: "NODE_ID", label: "Node id", type: "text", default: "1", placeholder: "1", advanced: true, help: "Pulse node id (see http://<bridge>/nodes/). Usually 1." },
+      { key: "TIMEOUT", label: "Timeout (seconds)", type: "number", default: "5.0", placeholder: "5.0", advanced: true, help: "Request timeout. The bridge's webserver can be slow to respond — raise this if readings drop with connection timeouts." },
+      { key: "FORCE_POLLING", label: "Force polling", type: "select", default: "", options: [{ value: "", label: "Default (off: use push)" }, { value: "True", label: "On" }, { value: "False", label: "Off" }], advanced: true, help: "Poll the bridge over HTTP instead of taking its live push readings. Push falls back to polling on its own when the bridge can't push, so only set this if push misbehaves." },
       { key: "OBIS_POWER_CURRENT", label: "OBIS: aggregate power", type: "text", placeholder: "0100100700ff", advanced: true, help: "12-hex OBIS code. Leave blank for the common eHZ default." },
       { key: "OBIS_POWER_L1", label: "OBIS: L1", type: "text", placeholder: "0100240700ff", advanced: true, help: "Per-phase OBIS code (optional)." },
       { key: "OBIS_POWER_L2", label: "OBIS: L2", type: "text", placeholder: "0100380700ff", advanced: true, help: "Per-phase OBIS code (optional)." },
       { key: "OBIS_POWER_L3", label: "OBIS: L3", type: "text", placeholder: "01004c0700ff", advanced: true, help: "Per-phase OBIS code (optional)." },
     ],
     esphome: {
-      kind: "sml",
-      tier: "alternate",
-      note: "The bridge serves a binary SML telegram over HTTP basic auth, which stock ESPHome can't decode. Instead read the meter directly with the native sml component via your own IR head (the config below), or use a community external component for the bridge.",
+      kind: "tibber_pulse",
+      tier: "native",
+      note: "Read with AstraMeter's tibber_pulse component, which polls the bridge over your LAN and decodes the telegram on the ESP. Polling only: ESPHome has no WebSocket client for the bridge's push stream.",
     },
   },
   {
@@ -710,6 +839,7 @@ export const POWERMETERS: Powermeter[] = [
     section: "SML",
     blurb: "A smart meter read over a serial IR head that emits SML.",
     docPython: "docs/powermeters.md#sml",
+    docEsphome: "docs/esphome-powermeters.md#sml",
     fields: [
       { key: "SERIAL", label: "Serial device", type: "text", placeholder: "/dev/ttyUSB0", required: true, help: "Path to the serial interface, e.g. /dev/ttyUSB0." },
       { key: "OBIS_POWER_CURRENT", label: "OBIS: aggregate power", type: "text", placeholder: "0100100700ff", advanced: true, help: "12-hex OBIS code. Leave blank for the common eHZ default." },
@@ -721,6 +851,24 @@ export const POWERMETERS: Powermeter[] = [
       kind: "sml",
       tier: "native",
       note: "Wire a photo-transistor to a UART RX pin and use the native sml component.",
+    },
+  },
+  {
+    id: "dsmr",
+    label: "DSMR / P1 smart meter (ESPHome only)",
+    section: "DSMR",
+    esphomeOnly: true,
+    blurb: "A meter with a P1 port, read on the ESP32 itself over its serial telegram.",
+    docEsphome: "docs/esphome-powermeters.md#dsmr--p1",
+    fields: [
+      { key: "DSMR_VERSION", label: "DSMR version", type: "select", default: "5", options: [{ value: "5", label: "DSMR 4 / 5 (115200 8N1)" }, { value: "3", label: "DSMR 3 (9600 7E1, no CRC)" }, { value: "2.2", label: "DSMR 2.2 (9600 7N1, no CRC)" }], help: "Sets the UART serial settings. DSMR 5 sends a telegram every second; the older versions every 10 seconds. Neither 2.2 nor 3 carries a CRC, so the check is turned off for both." },
+      { key: "RX_PIN", label: "P1 RX pin", type: "text", placeholder: "GPIO4", help: "ESP32 pin wired to the P1 data line." },
+      { key: "DECRYPTION_KEY", label: "Decryption key", type: "text", advanced: true, help: "Belgian and Luxembourgish meters encrypt P1. Leave blank for an unencrypted telegram." },
+    ],
+    esphome: {
+      kind: "dsmr",
+      tier: "native",
+      note: "Wire the P1 port to a UART RX pin and use the native dsmr component.",
     },
   },
 ];
@@ -738,7 +886,9 @@ export const PHASE_CAPABLE: Set<string> = new Set([
   "mqtt",
   "json_http",
   "sml",
+  "dsmr",
   "fronius",
+  "refoss",
   "tibber_pulse",
 ]);
 
@@ -828,6 +978,7 @@ export const MQTT_INSIGHTS_FIELDS: Field[] = [
   { key: "HA_DISCOVERY_PREFIX", ey: "ha_discovery_prefix", label: "Discovery prefix", help: "HA discovery prefix. Default homeassistant.", type: "text", placeholder: "homeassistant", advanced: true },
   { key: "MARSTEK_MQTT_ENABLED", ey: "marstek_mqtt_enabled", label: "Answer Marstek app polls", help: "Reply to Marstek-app MQTT polls on this broker (needs hame-relay ≥ 1.3.5 for live readings).", type: "select", default: "", options: [{ value: "", label: "Default (on)" }, { value: "true", label: "On" }, { value: "false", label: "Off" }], advanced: true },
   { key: "MARSTEK_MQTT_INTERVAL", ey: "marstek_mqtt_interval", label: "Marstek broadcast interval (s)", help: "Seconds between aggregate broadcasts when the app is quiet. 0 = polls only.", type: "number", placeholder: "300", advanced: true },
+  { key: "STATE_THROTTLE_INTERVAL", ey: "state_throttle_interval", label: "State throttle interval (s)", help: "Smallest gap between two state publishes for the same battery. 0 = every poll. Raise it for a quieter broker at the cost of resolution in Home Assistant.", type: "number", placeholder: "0", advanced: true },
 ];
 
 export const ESP_BOARDS: Option[] = [
