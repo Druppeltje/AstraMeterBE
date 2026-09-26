@@ -168,7 +168,7 @@ constexpr Range NUMERIC_FIELDS[] = {
 constexpr const char *BOOL_FIELDS[] = {"active", "auto_target"};
 
 // Mirrors apply_device_control in src/astrameter/ct002/controls.py.
-constexpr const char *DEVICE_FIELDS[] = {"active_control", "force_rotation"};
+constexpr const char *DEVICE_FIELDS[] = {"active_control", "peakshaving_threshold", "force_rotation"};
 // Buttons, not settings: they carry no value, so a write may arrive bare, and
 // there is no retained state for a dashboard write to mirror onto MQTT — a
 // retained press would re-fire on every reconnect.

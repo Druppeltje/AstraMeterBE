@@ -257,6 +257,8 @@ class MqttInsightsService:
     def unregister_device(self, device_id: str) -> None:
         self._devices.pop(device_id, None)
 
+    # ── Marstek MQTT responder ────────────────────────────────────────
+
     @property
     def marstek_mqtt_enabled(self) -> bool:
         return self._config.marstek_mqtt_enabled
@@ -764,6 +766,7 @@ class MqttInsightsService:
         device_status = {
             "smooth_target": data.get("smooth_target", 0),
             "active_control": data.get("active_control", False),
+            "peakshaving_threshold": data.get("peakshaving_threshold", 0.0),
             "consumer_count": data.get("consumer_count", 0),
             "control_quality": data.get("control_quality", "idle"),
             # Null, not 0: the score is absent while the loop has nothing to
@@ -1057,6 +1060,8 @@ class MqttInsightsService:
             names.append("force_rotation")
         if "active_control" in cmd:
             names.append("active_control")
+        if "peakshaving_threshold" in cmd:
+            names.append("peakshaving_threshold")
         for name in names:
             try:
                 apply_device_control(device, name, cmd.get(name))
@@ -1064,6 +1069,8 @@ class MqttInsightsService:
                 logger.warning("Rejected command for %s: %s", device_id, exc)
             except Exception:
                 logger.exception("Applying %s to %s failed", name, device_id)
+
+    # ── Powermeter health ─────────────────────────────────────────────
 
     async def _powermeter_health_loop(self, client: aiomqtt.Client) -> None:
         """Publish a per-powermeter "Online" diagnostic sensor.

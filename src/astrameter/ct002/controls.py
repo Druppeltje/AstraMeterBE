@@ -33,6 +33,7 @@ class ControllableDevice(Protocol):
     ) -> None: ...
     def set_consumer_min_dc_output(self, consumer_id: str, value: float) -> None: ...
     def set_active_control(self, active: bool) -> None: ...
+    def set_peakshaving_threshold(self, threshold: float) -> None: ...
     def force_efficiency_rotation(self) -> None: ...
 
 
@@ -149,5 +150,15 @@ def apply_device_control(device: ControllableDevice, field: str, value: object) 
         if not isinstance(value, bool):
             raise ValueError("active_control must be true or false")
         device.set_active_control(value)
+    elif field == "peakshaving_threshold":
+        if isinstance(value, bool):
+            raise ValueError("peakshaving_threshold must be a number")
+        try:
+            number = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("peakshaving_threshold must be a number") from exc
+        if not math.isfinite(number) or number < 0:
+            raise ValueError("peakshaving_threshold must be a non-negative number")
+        device.set_peakshaving_threshold(number)
     else:
         raise KeyError(field)

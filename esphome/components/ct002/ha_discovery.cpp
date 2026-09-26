@@ -424,6 +424,25 @@ std::pair<std::string, std::string> build_ct002_device_discovery(
     ac["retain"] = true;
     ac["entity_category"] = "config";
 
+    // Peak Shaving Threshold — caps household demand handed to the balancer
+    // (mirrors discovery.py / CT002.set_peakshaving_threshold). 0 disables it.
+    JsonObject pst = components["peakshaving_threshold"].to<JsonObject>();
+    pst["platform"] = "number";
+    pst["unique_id"] = uid_prefix + "_peakshaving_threshold";
+    pst["name"] = "Peak Shaving Threshold";
+    pst["unit_of_measurement"] = "W";
+    pst["device_class"] = "power";
+    pst["min"] = 0;
+    pst["max"] = 10000;
+    pst["step"] = 50;
+    pst["mode"] = "box";
+    pst["state_topic"] = state_topic;
+    pst["value_template"] = "{{ value_json.peakshaving_threshold | default(0) }}";
+    pst["command_topic"] = base_topic + "/ct002/" + device_id + "/set";
+    pst["command_template"] = "{\"peakshaving_threshold\": {{ value }}}";
+    pst["retain"] = true;
+    pst["entity_category"] = "config";
+
     JsonObject cc = components["consumer_count"].to<JsonObject>();
     cc["platform"] = "sensor";
     cc["unique_id"] = uid_prefix + "_consumer_count";
