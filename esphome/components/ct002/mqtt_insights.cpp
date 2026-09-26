@@ -303,6 +303,7 @@ void MqttInsightsComponent::publish_consumer_event_(const std::string &consumer_
     // reads its state here, so it shows "off" when active control is disabled
     // (via YAML or the switch itself) rather than always reading "on".
     root["active_control"] = this->ct002_->active_control();
+    root["peakshaving_threshold"] = this->ct002_->peakshaving_threshold();
     root["consumer_count"] = this->ct002_->reporting_consumer_count();
     // How well the loop is holding the grid at zero, plus a 0-100 score — the
     // one pair of entities that answers "is this working?" without reading the
@@ -542,6 +543,11 @@ void MqttInsightsComponent::handle_device_command_(const std::string &payload) {
       this->ct002_->set_active_control(root["active_control"].as<bool>());
     } else if (!root["active_control"].isNull()) {
       ESP_LOGW(TAG, "Invalid active_control value in device command");
+    }
+    if (root["peakshaving_threshold"].is<float>()) {
+      this->ct002_->set_peakshaving_threshold(root["peakshaving_threshold"].as<float>());
+    } else if (!root["peakshaving_threshold"].isNull()) {
+      ESP_LOGW(TAG, "Invalid peakshaving_threshold value in device command");
     }
     return true;
   });

@@ -849,9 +849,7 @@ class CT002:
             )
             self._peakshaving_logged = True
         total_battery_power = sum(
-            parse_int(c.power, 0)
-            for c in self._consumers.values()
-            if c.timestamp > 0
+            parse_int(c.power, 0) for c in self._consumers.values() if c.timestamp > 0
         )
         household_demand = total + total_battery_power
         if household_demand <= 0:
@@ -867,7 +865,7 @@ class CT002:
         if not self.active_control or not values:
             return values
 
-        total = sum(parse_int(v, 0) for v in values)
+        total: float = sum(parse_int(v, 0) for v in values)
         self._last_smooth_target = total
         sample_id = tuple(values)
         mode = self._consumer_mode(consumer_id)

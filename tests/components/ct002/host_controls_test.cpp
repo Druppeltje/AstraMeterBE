@@ -38,6 +38,7 @@ TEST(Controls, KnowsTheConsumerFields) {
   // Device-wide fields are not per-battery ones, and vice versa.
   EXPECT_FALSE(is_consumer_field("active_control"));
   EXPECT_TRUE(is_device_field("active_control"));
+  EXPECT_TRUE(is_device_field("peakshaving_threshold"));
   EXPECT_TRUE(is_device_field("force_rotation"));
   EXPECT_FALSE(is_device_field("manual_target"));
 }
@@ -103,6 +104,7 @@ TEST(Controls, TellsButtonsApartFromSettings) {
   // button is never mirrored onto a retained MQTT topic.
   EXPECT_TRUE(is_device_button("force_rotation"));
   EXPECT_FALSE(is_device_button("active_control"));
+  EXPECT_FALSE(is_device_button("peakshaving_threshold"));
   EXPECT_FALSE(is_device_button("manual_target"));
   EXPECT_FALSE(is_device_button("nonsense"));
   // Every button is still a device field.

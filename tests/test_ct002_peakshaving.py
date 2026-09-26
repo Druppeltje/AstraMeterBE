@@ -117,7 +117,7 @@ class TestPeakshavingThreshold:
         # 800 - 500 = 300W needed, battery already provides 300W, so the
         # system has nothing left to correct: signal is 0.
         assert out[0] == 0
-        
+
     def test_export_surplus_below_zero_passes_through_unaffected(self):
         """Net export (PV surplus) must be untouched so charging still works."""
         device = _ct002(
@@ -140,6 +140,7 @@ class TestPeakshavingThreshold:
         # Total = 300 + 100 + 100 = 500, exactly at threshold -> shaved to 0.
         out = device._compute_smooth_target([300, 100, 100], "a")
         assert sum(out) == 0
+
 
 class TestLivePeakshavingThreshold:
     def test_set_peakshaving_threshold_updates_value(self):

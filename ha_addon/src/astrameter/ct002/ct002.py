@@ -849,9 +849,7 @@ class CT002:
             )
             self._peakshaving_logged = True
         total_battery_power = sum(
-            parse_int(c.power, 0)
-            for c in self._consumers.values()
-            if c.timestamp > 0
+            parse_int(c.power, 0) for c in self._consumers.values() if c.timestamp > 0
         )
         household_demand = total + total_battery_power
         if household_demand <= 0:

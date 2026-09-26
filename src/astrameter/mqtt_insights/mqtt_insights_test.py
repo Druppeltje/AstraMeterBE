@@ -1371,6 +1371,9 @@ class _FakeDevice:
     def set_active_control(self, v: bool) -> None:
         self._record("active_control", v)
 
+    def set_peakshaving_threshold(self, v: float) -> None:
+        self._record("peakshaving_threshold", v)
+
     def force_efficiency_rotation(self) -> None:
         self._record("force_rotation", True)
 

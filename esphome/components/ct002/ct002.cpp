@@ -657,6 +657,33 @@ CT002Component::PhaseBucketPowers CT002Component::reporting_phase_buckets() cons
   return out;
 }
 
+void CT002Component::set_peakshaving_threshold(float threshold) {
+  if (threshold < 0.0f) {
+    ESP_LOGW(TAG, "Ignoring negative peak shaving threshold %.1f", threshold);
+    return;
+  }
+  if (this->peakshaving_threshold_ == threshold) return;
+  this->peakshaving_threshold_ = threshold;
+  ESP_LOGI(TAG, "Peak shaving threshold set to %.1fW", threshold);
+}
+
+float CT002Component::apply_peakshaving_(float total) {
+  if (this->peakshaving_threshold_ <= 0.0f) return total;
+  if (!this->peakshaving_logged_) {
+    ESP_LOGI(TAG, "Peak shaving enabled (threshold=%.1fW)", this->peakshaving_threshold_);
+    this->peakshaving_logged_ = true;
+  }
+  float total_battery_power = 0.0f;
+  for (const auto &kv : this->consumers_) {
+    if (kv.second.timestamp > 0.0) total_battery_power += kv.second.power;
+  }
+  const float household_demand = total + total_battery_power;
+  if (household_demand <= 0.0f) return total;
+  const float shaved_target =
+      household_demand < this->peakshaving_threshold_ ? household_demand : this->peakshaving_threshold_;
+  return total - shaved_target;
+}
+
 std::vector<float> CT002Component::compute_smooth_target_(const std::vector<float> &values,
                                                           const std::string &consumer_id) {
   // Cache the pre-balancer grid power for snapshot_consumer / Marstek
@@ -694,7 +721,8 @@ std::vector<float> CT002Component::compute_smooth_target_(const std::vector<floa
   // the balancer's per-phase output targets. mqtt_insights publishes this
   // as the device-level smooth_target sensor.
   this->last_smooth_target_ = grid_total;
-  auto out_arr = this->balancer_->compute_target(consumer_id, mode, reports, grid_total,
+  const float shaved_total = this->apply_peakshaving_(grid_total);
+  auto out_arr = this->balancer_->compute_target(consumer_id, mode, reports, shaved_total,
                                                  inactive, manual, values);
   for (size_t i = 0; i < 3; ++i) this->last_target_[i] = out_arr[i];
   return {out_arr[0], out_arr[1], out_arr[2]};
