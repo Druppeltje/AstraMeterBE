@@ -865,7 +865,7 @@ class CT002:
         if not self.active_control or not values:
             return values
 
-        total = sum(parse_int(v, 0) for v in values)
+        total: float = sum(parse_int(v, 0) for v in values)
         self._last_smooth_target = total
         sample_id = tuple(values)
         mode = self._consumer_mode(consumer_id)
