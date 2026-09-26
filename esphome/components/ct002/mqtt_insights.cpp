@@ -532,6 +532,7 @@ void MqttInsightsComponent::handle_consumer_field_command_(const std::string &co
 }
 
 void MqttInsightsComponent::handle_device_command_(const std::string &payload) {
+  bool changed = false;
   bool parsed = json::parse_json(payload, [&](JsonObject root) -> bool {
     if (root["force_rotation"].is<bool>() && root["force_rotation"].as<bool>()) {
       this->ct002_->force_balancer_rotation();
@@ -541,17 +542,37 @@ void MqttInsightsComponent::handle_device_command_(const std::string &payload) {
     // choice restores on restart.
     if (root["active_control"].is<bool>()) {
       this->ct002_->set_active_control(root["active_control"].as<bool>());
+      changed = true;
     } else if (!root["active_control"].isNull()) {
       ESP_LOGW(TAG, "Invalid active_control value in device command");
     }
     if (root["peakshaving_threshold"].is<float>()) {
       this->ct002_->set_peakshaving_threshold(root["peakshaving_threshold"].as<float>());
+      changed = true;
     } else if (!root["peakshaving_threshold"].isNull()) {
       ESP_LOGW(TAG, "Invalid peakshaving_threshold value in device command");
     }
     return true;
   });
-  if (!parsed) ESP_LOGW(TAG, "Invalid device command payload");
+  if (!parsed) {
+    ESP_LOGW(TAG, "Invalid device command payload");
+    return;
+  }
+  if (changed) this->republish_device_settings_();
+}
+
+void MqttInsightsComponent::republish_device_settings_() {
+  // active_control and peakshaving_threshold share one retained command
+  // topic, so writing either one would otherwise replace the broker's only
+  // copy of the other. Republish the merged settings after every change so
+  // the retained message always reflects both fields (mirrors
+  // MqttInsightsService._republish_device_settings on the Python side).
+  auto settings_buf = json::build_json([&](JsonObject root) {
+    root["active_control"] = this->ct002_->active_control();
+    root["peakshaving_threshold"] = this->ct002_->peakshaving_threshold();
+  });
+  const std::string topic = this->base_topic_ + "/ct002/" + this->device_id_ + "/set";
+  this->mqtt_->publish(topic, settings_buf, 0, true);
 }
 
 void MqttInsightsComponent::handle_marstek_message_(const std::string &topic,

@@ -2023,7 +2023,16 @@ async def test_force_rotation_command_via_mqtt(mqtt_broker: int) -> None:
         await service.stop()
 
 
-def test_retained_force_rotation_is_not_replayed() -> None:
+class _NullClient:
+    """Minimal aiomqtt.Client double: publish() is a silent no-op."""
+
+    async def publish(
+        self, topic: str, payload: bytes = b"", qos: int = 0, retain: bool = False
+    ) -> None:
+        return None
+
+
+async def test_retained_force_rotation_is_not_replayed() -> None:
     """A press the broker replayed at subscribe time must not fire.
 
     A button is momentary, so a retained press is always a leftover — and one
@@ -2036,15 +2045,19 @@ def test_retained_force_rotation_is_not_replayed() -> None:
     service.register_device("dev1", device)
     rotations = device.calls.setdefault("force_rotation", [])
     active = device.calls.setdefault("active_control", [])
+    client = cast(Any, _NullClient())
 
-    service._handle_device_command(
-        "dev1", {"force_rotation": True, "active_control": False}, retained=True
+    await service._handle_device_command(
+        "dev1",
+        {"force_rotation": True, "active_control": False},
+        client,
+        retained=True,
     )
     assert rotations == []
     assert active == [False]
 
     # A live press still rotates.
-    service._handle_device_command("dev1", {"force_rotation": True})
+    await service._handle_device_command("dev1", {"force_rotation": True}, client)
     assert rotations == [True]
 
 
@@ -2118,25 +2131,26 @@ async def test_retained_force_rotation_is_cleared_on_connect(mqtt_broker: int) -
         await service.stop()
 
 
-def test_active_control_device_command_dispatch() -> None:
+async def test_active_control_device_command_dispatch() -> None:
     """The device-level active_control field routes booleans to the handler
     and rejects non-boolean payloads."""
     service = _make_service(1883)
     device = _FakeDevice()
     service.register_device("dev1", device)
     calls = device.calls.setdefault("active_control", [])
+    client = cast(Any, _NullClient())
 
-    service._handle_device_command("dev1", {"active_control": False})
-    service._handle_device_command("dev1", {"active_control": True})
+    await service._handle_device_command("dev1", {"active_control": False}, client)
+    await service._handle_device_command("dev1", {"active_control": True}, client)
     assert calls == [False, True]
 
     # Non-boolean is rejected (no dispatch); unknown device is a no-op.
-    service._handle_device_command("dev1", {"active_control": "nope"})
-    service._handle_device_command("other", {"active_control": False})
+    await service._handle_device_command("dev1", {"active_control": "nope"}, client)
+    await service._handle_device_command("other", {"active_control": False}, client)
     assert calls == [False, True]
 
     service.unregister_device("dev1")
-    service._handle_device_command("dev1", {"active_control": True})
+    await service._handle_device_command("dev1", {"active_control": True}, client)
     assert calls == [False, True]
 
 

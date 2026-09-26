@@ -159,6 +159,7 @@ class MqttInsightsComponent : public Component {
   void handle_consumer_field_command_(const std::string &consumer_id, const std::string &field,
                                       const std::string &payload);
   void handle_device_command_(const std::string &payload);
+  void republish_device_settings_();
 
   // Marstek periodic broadcast (runs on a set_interval timer).
   void marstek_broadcast_tick_();

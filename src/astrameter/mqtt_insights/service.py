@@ -206,6 +206,17 @@ class MqttInsightsService:
         # usually before the owning device has started and registered, so the
         # payload is kept here and replayed when the device registers.
         self._pending_consumer_commands: dict[str, dict[tuple[str, str], str]] = {}
+        # Device-level commands (active_control / peakshaving_threshold) that
+        # arrived -- retained or live -- before the device registered.  Kept
+        # here and replayed in register_device(), mirroring the consumer
+        # command buffer above.
+        self._pending_device_commands: dict[str, dict[str, object]] = {}
+        # Last-known-good value of each settable device field, by device id.
+        # active_control and peakshaving_threshold are written to the same
+        # retained command topic, so whenever one changes we republish the
+        # merged dict rather than letting the broker keep only the most
+        # recently written field.
+        self._last_device_settings: dict[str, dict[str, object]] = {}
         self._connected = asyncio.Event()
         # Marstek MQTT responder state — populated via register_marstek().
         self._marstek_bindings: dict[str, MarstekMqttBinding] = {}
@@ -253,6 +264,7 @@ class MqttInsightsService:
         that arrived before it registered."""
         self._devices[device_id] = device
         self._replay_consumer_commands(device_id)
+        self._replay_device_commands(device_id)
 
     def unregister_device(self, device_id: str) -> None:
         self._devices.pop(device_id, None)
@@ -947,7 +959,9 @@ class MqttInsightsService:
             retained = bool(message.retain)
             if retained and any(is_device_button(name) for name in cmd):
                 await self._drop_retained_button_press(client, topic_str, cmd)
-            self._handle_device_command(parsed.device_id, cmd, retained=retained)
+            await self._handle_device_command(
+                parsed.device_id, cmd, client, retained=retained
+            )
 
     def _handle_consumer_field_command(
         self, device_id: str, consumer_id: str, field: str, payload: str
@@ -1046,13 +1060,15 @@ class MqttInsightsService:
             return
         logger.info("Cleared a stale retained button press on %s", topic)
 
-    def _handle_device_command(
-        self, device_id: str, cmd: dict, *, retained: bool = False
+    async def _handle_device_command(
+        self,
+        device_id: str,
+        cmd: dict,
+        client: aiomqtt.Client,
+        *,
+        retained: bool = False,
     ) -> None:
         device = self._devices.get(device_id)
-        if device is None:
-            logger.debug("No device %s registered for %r", device_id, cmd)
-            return
         names = []
         # A button is momentary: honour a live press, never a retained one the
         # broker replayed at subscribe time.
@@ -1062,13 +1078,79 @@ class MqttInsightsService:
             names.append("active_control")
         if "peakshaving_threshold" in cmd:
             names.append("peakshaving_threshold")
+
+        if device is None:
+            # The broker redelivers retained commands right after we
+            # subscribe, usually before the owning device has registered.
+            # Buffer the settable fields so they are not lost; a button
+            # press is momentary and meaningless once delayed, so it is
+            # dropped rather than buffered.
+            pending = self._pending_device_commands.setdefault(device_id, {})
+            for name in names:
+                if name != "force_rotation":
+                    pending[name] = cmd.get(name)
+            logger.debug("No device %s registered for %r", device_id, cmd)
+            return
+
+        changed = False
         for name in names:
             try:
                 apply_device_control(device, name, cmd.get(name))
             except ValueError as exc:
                 logger.warning("Rejected command for %s: %s", device_id, exc)
+                continue
             except Exception:
                 logger.exception("Applying %s to %s failed", name, device_id)
+                continue
+            if name != "force_rotation":
+                self._last_device_settings.setdefault(device_id, {})[name] = cmd.get(
+                    name
+                )
+                changed = True
+
+        if changed:
+            await self._republish_device_settings(device_id, client)
+
+    async def _republish_device_settings(
+        self, device_id: str, client: aiomqtt.Client
+    ) -> None:
+        """Re-publish the merged, retained settings for *device_id*.
+
+        active_control and peakshaving_threshold share one retained command
+        topic, so writing either one would otherwise replace the broker's
+        only copy of the other.  Republishing the merged dict after every
+        successful change keeps a single retained message that always
+        reflects every settable field.
+        """
+        settings = self._last_device_settings.get(device_id)
+        if not settings:
+            return
+        topic = device_command_topic(self._config.base_topic, device_id)
+        try:
+            await client.publish(
+                topic, payload=json.dumps(settings).encode(), qos=1, retain=True
+            )
+        except Exception:
+            logger.exception("Failed to republish merged device settings on %s", topic)
+
+    def _replay_device_commands(self, device_id: str) -> None:
+        """Apply the device-level commands that arrived before *device_id*
+        registered (the normal order on an app restart)."""
+        pending = self._pending_device_commands.pop(device_id, None)
+        if not pending:
+            return
+        device = self._devices.get(device_id)
+        if device is None:
+            return
+        for name, value in pending.items():
+            try:
+                apply_device_control(device, name, value)
+            except ValueError as exc:
+                logger.warning("Rejected buffered command for %s: %s", device_id, exc)
+            except Exception:
+                logger.exception("Applying buffered %s to %s failed", name, device_id)
+            else:
+                self._last_device_settings.setdefault(device_id, {})[name] = value
 
     # ── Powermeter health ─────────────────────────────────────────────
 
