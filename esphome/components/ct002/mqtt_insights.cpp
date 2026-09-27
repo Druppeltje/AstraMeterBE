@@ -532,7 +532,8 @@ void MqttInsightsComponent::handle_consumer_field_command_(const std::string &co
 }
 
 void MqttInsightsComponent::handle_device_command_(const std::string &payload) {
-  bool changed = false;
+  const bool active_control_before = this->ct002_->active_control();
+  const float peakshaving_threshold_before = this->ct002_->peakshaving_threshold();
   bool parsed = json::parse_json(payload, [&](JsonObject root) -> bool {
     if (root["force_rotation"].is<bool>() && root["force_rotation"].as<bool>()) {
       this->ct002_->force_balancer_rotation();
@@ -542,13 +543,16 @@ void MqttInsightsComponent::handle_device_command_(const std::string &payload) {
     // choice restores on restart.
     if (root["active_control"].is<bool>()) {
       this->ct002_->set_active_control(root["active_control"].as<bool>());
-      changed = true;
     } else if (!root["active_control"].isNull()) {
       ESP_LOGW(TAG, "Invalid active_control value in device command");
     }
     if (root["peakshaving_threshold"].is<float>()) {
-      this->ct002_->set_peakshaving_threshold(root["peakshaving_threshold"].as<float>());
-      changed = true;
+      const float t = root["peakshaving_threshold"].as<float>();
+      if (std::isfinite(t) && t >= 0.0f) {
+        this->ct002_->set_peakshaving_threshold(t);
+      } else {
+        ESP_LOGW(TAG, "Out-of-range peakshaving_threshold in device command");
+      }
     } else if (!root["peakshaving_threshold"].isNull()) {
       ESP_LOGW(TAG, "Invalid peakshaving_threshold value in device command");
     }
@@ -558,7 +562,10 @@ void MqttInsightsComponent::handle_device_command_(const std::string &payload) {
     ESP_LOGW(TAG, "Invalid device command payload");
     return;
   }
-  if (changed) this->republish_device_settings_();
+  if (this->ct002_->active_control() != active_control_before ||
+      this->ct002_->peakshaving_threshold() != peakshaving_threshold_before) {
+    this->republish_device_settings_();
+  }
 }
 
 void MqttInsightsComponent::republish_device_settings_() {

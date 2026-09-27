@@ -1103,10 +1103,11 @@ class MqttInsightsService:
                 logger.exception("Applying %s to %s failed", name, device_id)
                 continue
             if name != "force_rotation":
-                self._last_device_settings.setdefault(device_id, {})[name] = cmd.get(
-                    name
-                )
-                changed = True
+                settings = self._last_device_settings.setdefault(device_id, {})
+                value = cmd.get(name)
+                if name not in settings or settings[name] != value:
+                    changed = True
+                settings[name] = value
 
         if changed:
             await self._republish_device_settings(device_id, client)
