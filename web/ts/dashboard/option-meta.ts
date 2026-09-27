@@ -289,6 +289,17 @@ export const OPTION_META: Record<string, OptionMeta> = {
       "Work out each battery's own target instead of relaying the raw grid " +
       "total and letting every battery react to it separately.",
   },
+  peakshaving_threshold: {
+    label: "Peak shaving threshold (W)",
+    group: CONTROL,
+    help:
+      "Caps the household demand handed to the balancer at this wattage, " +
+      "reconstructed from the raw grid reading plus what the batteries are " +
+      "currently contributing. Useful for capacity-tariff billing (e.g. " +
+      "Belgian peak-tariff structures). 0 disables it; adjustable live via " +
+      "MQTT or this dashboard without a restart.",
+    placeholder: "0",
+  },
   fair_distribution: {
     label: "Share load between batteries",
     group: CONTROL,
