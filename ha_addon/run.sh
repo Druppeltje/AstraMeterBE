@@ -187,7 +187,8 @@ else
             "osc_damp_decay:OSC_DAMP_DECAY" \
             "osc_damp_threshold:OSC_DAMP_THRESHOLD" \
             "concentrate_deadband:CONCENTRATE_DEADBAND" \
-            "import_trim_w:IMPORT_TRIM_W"; do
+            "import_trim_w:IMPORT_TRIM_W" \
+            "peakshaving_threshold:PEAKSHAVING_THRESHOLD"; do
             opt="${pair%%:*}"
             key="${pair##*:}"
             if bashio::config.has_value "$opt"; then

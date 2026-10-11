@@ -1,5 +1,5 @@
 name: "AstraMeter Peakshaving"
-version: "2.2.4-peakshaving-Michael1.0"
+version: "2.2.4-peakshaving-Michael1.1"
 slug: b2500_meter_peakshaving
 description: >-
   "Replicates a Smart Meter device for Marstek energy storage systems (formerly B2500 Meter) while allowing integration with various smart meters."
@@ -62,6 +62,7 @@ schema:
   efficiency_rotation_interval: int(1,)?
   min_dc_output: float(0,)?
   grid_predict_trust: float(0,1)?
+  peakshaving_threshold: float(0,10000)?
   fair_distribution: bool?
   balance_gain: float(0,1)?
   balance_deadband: int(0,)?
