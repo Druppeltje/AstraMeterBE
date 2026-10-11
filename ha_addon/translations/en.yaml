@@ -47,6 +47,9 @@ configuration:
   pace_max_step:
     name: Ramp Pacing Max Step (W)
     description: "Ceiling the ramp-pacing cap grows toward once a battery is tracking the command. Higher lets large load changes be followed in fewer, bigger steps. Default 100 (roughly matches the firmware's own maximum ramp around 400–600 W when raised). Only used when the base step is above 0. Only applies to CT002/CT003 device types."
+  peakshaving_threshold:
+    name: Peak Shaving Threshold (W)
+    description: "For tariffs that bill on peak demand (e.g. the Belgian capacity tariff): the batteries only cover demand above this many watts and stay idle below it. 0 disables peak shaving (default). Range 0-10000. Only applies to CT002/CT003 device types."
   fair_distribution:
     name: Fair Distribution
     description: "Adjust each battery's target so multiple batteries share the load evenly. Only matters with two or more batteries. Enabled by default. Only applies to CT002/CT003 device types."
